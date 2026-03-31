@@ -1,0 +1,2 @@
+target_year,total_ev_projected_2027,method,source_repo
+2027,120008,"SARIMA(1,0,2)(1,0,1,12) on official datos.gob.es EV turismo matriculations",Admindatosgobes/Laboratorio-de-Datos
