@@ -67,10 +67,10 @@ python scripts/scrub_notebook_paths.py
 This produces the competition CSVs in `data/submission/`, caches the official external inputs in `data/external/`, and rebuilds the proposal map in `maps/proposed_charging_network.html`.
 
 At the time of writing, the validated submission package contains:
-- `342` proposed charging locations
+- `269` proposed charging locations
 - `9,699` existing baseline stations matched from the official NAP source
-- `183` friction points
-- `120,008` projected EVs in the 2027 scenario
+- `145` friction points
+- `549,226` projected EV stock proxy in the 2027 scenario
 
 For the strongest offline demo artifact, also build:
 
@@ -79,6 +79,7 @@ python scripts/build_offline_scenario_explorer.py
 ```
 
 This creates `maps/offline_scenario_explorer.html`, a self-contained local scenario explorer with no external tile or web dependencies.
+The default BI artifact `maps/proposed_charging_network.html` is also generated as a self-contained offline HTML file.
 
 If you want to remove machine-specific absolute paths from saved notebook outputs before sharing the repo, run:
 
@@ -159,7 +160,7 @@ Scored Data → Interactive Maps (Folium) → KPI Dashboards (Plotly) → HTML E
 NAP charging XML + datos.gob.es EV exercise + distributor capacity files → cached external inputs → datathon CSV package
 ```
 - **Charging baseline**: official NAP-DGT/MITERD DATEX II charging-point publication matched to RTIG corridors
-- **EV forecast**: official datos.gob.es electrification exercise data extended to 2027 with the same SARIMA family used in the published notebook
+- **EV forecast**: official datos.gob.es electrification exercise data extended to a 2027 EV stock proxy using the same SARIMA family used in the published notebook
 - **Grid capacity**: nearest-node matching against published demand-capacity files from i-DE, e-distribución/Endesa, and Viesgo
 - **Maps**: `maps/priority_map.html`, `maps/density_heatmap.html`
 - **Dashboard**: `maps/dashboard.html` (4-panel analytical view)
@@ -200,10 +201,10 @@ NAP charging XML + datos.gob.es EV exercise + distributor capacity files → cac
 ## 🎯 Key Findings Summary
 
 ### Final Submission Snapshot
-- **Proposed charging locations**: 342
+- **Proposed charging locations**: 269
 - **Existing interurban baseline stations**: 9,699
-- **Friction points**: 183
-- **Projected EV stock (2027)**: 120,008
+- **Friction points**: 145
+- **Projected EV stock proxy (2027)**: 549,226
 - **Grid coverage**: i-DE, Endesa, and Viesgo demand-capacity files are all represented in the matching layer
 
 ### Network Composition

@@ -122,10 +122,10 @@ Executed the core analytical notebooks and the final submission notebook for the
 - Judge-friendly map linked: `maps/proposed_charging_network.html`
 - Offline scenario explorer linked: `maps/offline_scenario_explorer.html`
 - Final package summary reflected in notebook outputs:
-  - 342 proposed charging locations
+  - 269 proposed charging locations
   - 9,699 existing baseline stations
-  - 183 friction points
-  - 120,008 projected EVs in 2027
+  - 145 friction points
+  - 549,226 projected EV stock proxy in 2027
 
 ---
 

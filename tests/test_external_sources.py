@@ -3,7 +3,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 
 import src.data.external_sources as es
 
@@ -218,6 +218,15 @@ def test_grid_capacity_standardization_and_bundle(tmp_path):
     assert not bundle.empty
     assert "Viesgo" in set(bundle["distributor_network"])
 
+    utf_path = tmp_path / "grid_utf.csv"
+    utf_path.write_text("node,longitude,latitude,capacity available (mw)\n", encoding="utf-8")
+    try:
+        es._read_delimited_or_excel(tmp_path / "missing.csv")
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("Expected FileNotFoundError for missing file")
+
 
 def test_grid_matching_and_try_build_inputs(tmp_path, monkeypatch):
     stations = pd.DataFrame(
@@ -259,7 +268,89 @@ def test_grid_matching_and_try_build_inputs(tmp_path, monkeypatch):
     assert enriched.loc[1, "grid_status"] == "Congested"
     assert enriched.loc[2, "distributor_network"] == "Endesa"
 
-    fallback = es.enrich_stations_with_grid(stations.iloc[[0]], pd.DataFrame(), charger_power_kw=150)
+
+def test_additional_external_source_branches(tmp_path, monkeypatch):
+    route_summary = pd.DataFrame([{"carretera": "A-1", "route_score": 10.0}])
+    enriched = es.enrich_route_summary_with_baseline(route_summary, pd.DataFrame())
+    assert enriched.loc[0, "existing_station_count"] == 0
+
+    monthly_history_path = tmp_path / "ev_monthly_counts_official.csv"
+    pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=24, freq="MS"),
+            "electric_turismo_registrations": list(range(100, 124)),
+        }
+    ).to_csv(monthly_history_path, index=False)
+
+    class FakeForecast:
+        def summary_frame(self, alpha=0.5):
+            return pd.DataFrame(
+                {
+                    "mean": np.log(np.linspace(1000, 1500, 72)),
+                    "mean_ci_lower": np.log(np.linspace(900, 1400, 72)),
+                    "mean_ci_upper": np.log(np.linspace(1100, 1600, 72)),
+                }
+            )
+
+    class FakeFitted:
+        def get_forecast(self, horizon):
+            assert horizon == 72
+            return FakeForecast()
+
+    class FakeSARIMAX:
+        def __init__(self, series, order, seasonal_order):
+            assert order == (1, 0, 2)
+            assert seasonal_order == (1, 0, 1, 12)
+
+        def fit(self, disp=False):
+            return FakeFitted()
+
+    monkeypatch.setattr(es.sm.tsa.statespace, "SARIMAX", FakeSARIMAX)
+    projection = es.build_ev_projection_from_monthly_history(
+        monthly_history_path,
+        tmp_path / "ev_projection_2027.csv",
+        target_year=2027,
+    )
+    saved_projection = pd.read_csv(tmp_path / "ev_projection_2027.csv")
+    assert projection["projected_total"] == int(saved_projection["total_ev_projected_2027"].iloc[0])
+    assert "stock proxy" in saved_projection["method"].iloc[0].lower()
+
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    (external_dir / "existing_interurban_stations_by_route.csv").write_text("carretera,existing_station_count\nA-1,1\n", encoding="utf-8")
+    (external_dir / "existing_interurban_stations.csv").write_text("total_existing_stations_baseline,source\n3,test\n", encoding="utf-8")
+    monthly_history_path.replace(external_dir / "ev_monthly_counts_official.csv")
+    pd.DataFrame(
+        [
+            {
+                "target_year": 2027,
+                "total_ev_projected_2027": 999,
+                "method": "legacy annual registrations",
+                "source_repo": "repo",
+            }
+        ]
+    ).to_csv(external_dir / "ev_projection_2027.csv", index=False)
+
+    roads = gpd.GeoDataFrame({"carretera": ["A-1"], "geometry": [Point(-3.5, 40.5)]}, crs="EPSG:4326")
+    monkeypatch.setattr(es, "download_file", lambda url, output_path, timeout=180: output_path)
+    result = es.try_build_official_external_inputs(roads, external_dir, target_year=2027)
+    refreshed = pd.read_csv(external_dir / "ev_projection_2027.csv")
+    assert "stock proxy" in refreshed["method"].iloc[0].lower()
+    assert result["ev_projection_path"] == external_dir / "ev_projection_2027.csv"
+
+    fallback_stations = pd.DataFrame(
+        [
+            {
+                "location_id": "IBE_001",
+                "latitude": 40.5,
+                "longitude": -3.5,
+                "route_segment": "A-1",
+                "n_chargers_proposed": 4,
+                "grid_status": "Moderate",
+            }
+        ]
+    )
+    fallback = es.enrich_stations_with_grid(fallback_stations, pd.DataFrame(), charger_power_kw=150)
     assert fallback.loc[0, "distributor_network"] == "i-DE"
 
     roads = sample_roads()

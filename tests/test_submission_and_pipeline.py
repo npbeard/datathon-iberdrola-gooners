@@ -8,6 +8,16 @@ from shapely.geometry import LineString, MultiLineString, Point
 import scripts.generate_submission_package as gsp
 import scripts.run_pipeline as run_pipeline
 from scripts.build_offline_scenario_explorer import build_scenarios, geometry_to_lines, render_html
+from scripts.build_offline_reference_maps import (
+    backdrop_features,
+    base_styles,
+    bounds_from_features as ref_bounds_from_features,
+    build_summary as ref_build_summary,
+    centroid_points as ref_centroid_points,
+    geometry_to_features as ref_geometry_to_features,
+    render_heatmap as ref_render_heatmap,
+    render_line_map as ref_render_line_map,
+)
 from scripts.build_report import generate_report
 from scripts.fetch_external_data import main as fetch_external_data_main
 from scripts.scrub_notebook_paths import main as scrub_notebook_paths_main, scrub_text
@@ -54,6 +64,11 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     roads = sample_roads_gdf()
     route_summary = gsp.summarize_routes(roads)
     assert route_summary.iloc[0]["carretera"] == "AP-7"
+    planning_summary = gsp.enrich_route_summary_for_planning(route_summary)
+    assert "service_need_score" in planning_summary.columns
+    assert planning_summary["route_hierarchy_score"].between(0.6, 1.0).all()
+    assert gsp._minmax_normalize(pd.Series(dtype=float)).empty
+    assert gsp._minmax_normalize(pd.Series([5.0, 5.0])).tolist() == [1.0, 1.0]
 
     assert gsp.assign_proxy_grid_status(0, "relaxed") == "Moderate"
     assert gsp.assign_proxy_grid_status(9, "balanced") == "Moderate"
@@ -80,20 +95,37 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     assert gsp.chargers_for_route(medium_row, "balanced") == 6
     assert gsp.chargers_for_route(low_row, "balanced") == 4
     assert gsp.assign_proxy_grid_status(50, "balanced") == "Sufficient"
+    assert gsp._dynamic_spacing_km(planning_summary.iloc[0], 120) <= 160
+    assert gsp._route_target_station_count(planning_summary.iloc[0], 120, 50) >= 1
+    assert gsp._target_positions_by_count(planning_summary.iloc[0], 0) == []
 
     zero_span_segments = roads.iloc[[0]].copy()
     zero_span_segments["pk_inicio"] = 10.0
     zero_span_segments["pk_fin"] = 10.0
     zero_point = gsp.interpolate_station_point(zero_span_segments, 10.0)
     assert round(zero_point.x, 3) < 0
+    zero_span_row = pd.Series({"min_pk": 10.0, "max_pk": 10.0})
+    assert gsp._target_positions_by_count(zero_span_row, 1) == [10.0]
 
-    file_2 = gsp.build_file_2(roads, route_summary, spacing_km=100, min_route_span_km=50, charger_policy="balanced", grid_policy="balanced")
+    file_2 = gsp.build_file_2(roads, planning_summary, spacing_km=100, min_route_span_km=50, charger_policy="balanced", grid_policy="balanced")
     assert FILE_2_COLUMNS == file_2.columns.tolist()
     assert not file_2.empty
 
-    skipped_summary = route_summary.copy()
+    duplicate_rows = pd.DataFrame(
+        [
+            {"location_id": "X", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 4, "grid_status": "Moderate"},
+            {"location_id": "Y", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 6, "grid_status": "Congested"},
+        ]
+    )
+    deduped = gsp.deduplicate_station_rows(duplicate_rows)
+    assert len(deduped) == 1
+    assert deduped.loc[0, "n_chargers_proposed"] == 10
+    assert deduped.loc[0, "grid_status"] == "Congested"
+
+    skipped_summary = planning_summary.copy()
     skipped_summary.loc[:, "min_pk"] = 0.0
     skipped_summary.loc[:, "max_pk"] = 10.0
+    skipped_summary.loc[:, "pk_span_km"] = 10.0
     skipped = gsp.build_file_2(roads, skipped_summary, spacing_km=100, min_route_span_km=50)
     assert skipped.empty
 
@@ -106,11 +138,14 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     assert FILE_1_COLUMNS == file_1.columns.tolist()
 
     map_path = tmp_path / "map.html"
-    gsp.save_map(file_2, map_path)
+    gsp.save_map(file_2, map_path, roads_gdf=roads)
     assert map_path.exists()
+    assert "Select a station" in map_path.read_text(encoding="utf-8")
     empty_map_path = tmp_path / "empty_map.html"
     gsp.save_map(pd.DataFrame(columns=FILE_2_COLUMNS), empty_map_path)
     assert empty_map_path.exists()
+    assert gsp._geometry_to_lines(None) == []
+    assert gsp._map_bounds(pd.DataFrame(columns=FILE_2_COLUMNS), [])["minLon"] == -9.5
 
     gsp.save_assumptions_note(tmp_path, "loaded:x.csv", "missing:y.csv", "loaded:grid.csv", 120)
     assert "120" in (tmp_path / "ASSUMPTIONS.md").read_text(encoding="utf-8")
@@ -156,6 +191,164 @@ datasets: {}
 
     assert (root / "data" / "submission" / "File 1.csv").exists()
     assert (root / "maps" / "proposed_charging_network.html").exists()
+
+
+def test_generate_submission_branch_helpers():
+    route_summary = pd.DataFrame(
+        [
+            {"carretera": "N-2", "total_length_km": 100.0, "pk_span_km": 100.0, "mean_complexity": 1.0, "tent_share": 0.0, "existing_station_count": 0, "coverage_gap_score": 10.0},
+            {"carretera": "AP-7N", "total_length_km": 110.0, "pk_span_km": 110.0, "mean_complexity": 1.5, "tent_share": 0.0, "existing_station_count": 1, "coverage_gap_score": 9.0},
+            {"carretera": "A-66R", "total_length_km": 120.0, "pk_span_km": 120.0, "mean_complexity": 2.0, "tent_share": 0.0, "existing_station_count": 2, "coverage_gap_score": 8.0},
+            {"carretera": "N-340A", "total_length_km": 130.0, "pk_span_km": 130.0, "mean_complexity": 2.5, "tent_share": 0.0, "existing_station_count": 3, "coverage_gap_score": 7.0},
+            {"carretera": "XX-1", "total_length_km": 140.0, "pk_span_km": 140.0, "mean_complexity": 3.0, "tent_share": 0.0, "existing_station_count": 4, "coverage_gap_score": 6.0},
+        ]
+    )
+    enriched = gsp.enrich_route_summary_for_planning(route_summary)
+    hierarchy = dict(zip(enriched["carretera"], enriched["route_hierarchy_score"]))
+    assert hierarchy["N-2"] == 0.88
+    assert hierarchy["AP-7N"] == 0.90
+    assert hierarchy["A-66R"] == 0.76
+    assert hierarchy["N-340A"] == 0.66
+    assert hierarchy["XX-1"] == 0.60
+
+    low_need_row = pd.Series(
+        {
+            "service_need_score": 0.1,
+            "existing_station_count": 20.0,
+            "total_length_km": 500.0,
+            "pk_span_km": 500.0,
+            "route_hierarchy_score": 0.65,
+        }
+    )
+    assert gsp._dynamic_spacing_km(low_need_row, 120) > 120
+
+    medium_need_row = pd.Series(
+        {
+            "service_need_score": 0.72,
+            "existing_station_count": 10.0,
+            "total_length_km": 300.0,
+            "pk_span_km": 300.0,
+            "route_hierarchy_score": 0.96,
+        }
+    )
+    assert gsp._route_target_station_count(medium_need_row, 120, 50) >= 1
+    service_need_row = pd.Series(
+        {
+            "service_need_score": 0.72,
+            "existing_station_count": 10.0,
+            "total_length_km": 300.0,
+            "pk_span_km": 300.0,
+            "route_hierarchy_score": 0.80,
+        }
+    )
+    assert gsp._route_target_station_count(service_need_row, 120, 50) >= 1
+
+    roads = gpd.GeoDataFrame(
+        {"geometry": [None, MultiLineString([[(0, 0), (1, 1)], [(1, 1), (2, 2)]])]},
+        crs="EPSG:4326",
+    )
+    lines = gsp._geometry_to_lines(roads)
+    assert len(lines) == 2
+
+
+def test_offline_reference_map_helpers_and_main(tmp_path, monkeypatch):
+    roads = sample_roads_gdf().copy()
+    roads["center_lat"] = [40.7, 41.5, 42.0]
+    roads["center_lon"] = [-3.45, -2.5, 1.5]
+    roads["priority_score"] = [12.0, 68.0, 91.0]
+    roads["priority_level"] = ["Low", "Medium", "High"]
+
+    base_features = ref_geometry_to_features(roads, "base")
+    priority_features = ref_geometry_to_features(roads, "priority")
+    assert base_features
+    assert priority_features[0]["color"]
+    bounds = ref_bounds_from_features(base_features)
+    assert bounds["maxLon"] > bounds["minLon"]
+    points = ref_centroid_points(roads)
+    assert points[0]["weight"] > 0
+    roads_without_centers = roads.copy()
+    roads_without_centers["center_lat"] = [None, None, None]
+    roads_without_centers["center_lon"] = [None, None, None]
+    assert ref_centroid_points(roads_without_centers)
+    backdrops = backdrop_features(base_features)
+    assert backdrops
+    summary = ref_build_summary(roads)
+    assert summary["segments"] == 3
+    assert "--bg" in base_styles()
+
+    line_html = ref_render_line_map("Base", "Subtitle", base_features, bounds, backdrops, "base", summary)
+    assert "Offline Reference Map" in line_html
+    priority_html = ref_render_line_map("Priority", "Subtitle", priority_features, bounds, backdrops, "priority", summary)
+    assert "High" in priority_html
+    heat_html = ref_render_heatmap("Heat", "Subtitle", points, bounds, backdrops, summary)
+    assert "Higher density" in heat_html
+
+    import scripts.build_offline_reference_maps as borm
+
+    root = tmp_path / "repo"
+    maps_dir = root / "maps"
+    maps_dir.mkdir(parents=True)
+    monkeypatch.setattr(borm, "MAPS_DIR", maps_dir)
+    monkeypatch.setattr(borm, "load_datasets", lambda: roads)
+    borm.main()
+    assert (maps_dir / "base_map.html").exists()
+    assert (maps_dir / "priority_map.html").exists()
+    assert (maps_dir / "density_heatmap.html").exists()
+
+
+def test_offline_reference_map_load_datasets_and_empty_geometry(monkeypatch):
+    import scripts.build_offline_reference_maps as borm
+
+    roads = sample_roads_gdf().copy()
+    roads = roads.set_crs(None, allow_override=True)
+    scored = pd.DataFrame({"priority_score": [11.0, 22.0, 33.0]})
+    calls = {"count": 0}
+
+    def fake_read_parquet(path):
+        calls["count"] += 1
+        return roads if calls["count"] == 1 else scored
+
+    monkeypatch.setattr(borm.gpd, "read_parquet", fake_read_parquet)
+    merged = borm.load_datasets()
+    assert merged.crs.to_string() == "EPSG:4326"
+    assert (merged["priority_level"] == "Low").all()
+    assert merged["priority_score"].tolist() == [11.0, 22.0, 33.0]
+
+    roads_3857 = sample_roads_gdf().to_crs("EPSG:3857")
+    scored_full = pd.DataFrame({"priority_score": [1.0, 2.0, 3.0], "priority_level": ["Low", "Medium", "High"]})
+    calls = {"count": 0}
+
+    def fake_read_parquet_3857(path):
+        calls["count"] += 1
+        return roads_3857 if calls["count"] == 1 else scored_full
+
+    monkeypatch.setattr(borm.gpd, "read_parquet", fake_read_parquet_3857)
+    merged_3857 = borm.load_datasets()
+    assert merged_3857.crs.to_string() == "EPSG:4326"
+    assert merged_3857["priority_level"].tolist() == ["Low", "Medium", "High"]
+
+    roads_default_score = sample_roads_gdf().copy()
+    calls = {"count": 0}
+
+    def fake_read_parquet_missing_score(path):
+        calls["count"] += 1
+        return roads_default_score if calls["count"] == 1 else pd.DataFrame({"priority_level": ["Low", "Low", "Low"]})
+
+    monkeypatch.setattr(borm.gpd, "read_parquet", fake_read_parquet_missing_score)
+    merged_default_score = borm.load_datasets()
+    assert (merged_default_score["priority_score"] == 0.0).all()
+
+    empty_geom = sample_roads_gdf().copy()
+    empty_geom.loc[0, "geometry"] = None
+    features = borm.geometry_to_features(empty_geom, "base")
+    assert len(features) >= 2
+
+    empty_centroids = sample_roads_gdf().copy()
+    empty_centroids["center_lat"] = [None, None, None]
+    empty_centroids["center_lon"] = [None, None, None]
+    empty_centroids.loc[0, "geometry"] = None
+    points = borm.centroid_points(empty_centroids)
+    assert len(points) == 2
 
 
 def test_validate_submission_and_run_pipeline(tmp_path, monkeypatch):
@@ -326,9 +519,55 @@ def test_build_report_and_offline_explorer(tmp_path, monkeypatch):
     assert report_path == "Error: Processed data not found. Run pipeline first."
 
     monkeypatch.setattr(gpd, "read_parquet", lambda _: roads)
+    submission_dir = tmp_path / "data" / "submission"
+    submission_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "total_proposed_stations": 2,
+                "total_existing_stations_baseline": 7,
+                "total_friction_points": 1,
+                "total_ev_projected_2027": 123456,
+            }
+        ]
+    ).to_csv(submission_dir / "File 1.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "location_id": "IBE_001",
+                "latitude": 40.5,
+                "longitude": -3.5,
+                "route_segment": "A-1",
+                "n_chargers_proposed": 4,
+                "grid_status": "Moderate",
+            },
+            {
+                "location_id": "IBE_002",
+                "latitude": 41.5,
+                "longitude": 1.2,
+                "route_segment": "AP-7",
+                "n_chargers_proposed": 8,
+                "grid_status": "Sufficient",
+            },
+        ]
+    ).to_csv(submission_dir / "File 2.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "bottleneck_id": "FRIC_001",
+                "latitude": 40.5,
+                "longitude": -3.5,
+                "route_segment": "A-1",
+                "distributor_network": "i-DE",
+                "estimated_demand_kw": 600,
+                "grid_status": "Moderate",
+            }
+        ]
+    ).to_csv(submission_dir / "File 3.csv", index=False)
     report_path = generate_report(str(report_dir))
     assert Path(report_path).exists()
     assert "RTIG ROADS NETWORK ANALYSIS REPORT" in Path(report_path).read_text(encoding="utf-8")
+    assert "A-1: 1 sites / 4 chargers" in Path(report_path).read_text(encoding="utf-8")
 
     import scripts.build_offline_scenario_explorer as boe
 

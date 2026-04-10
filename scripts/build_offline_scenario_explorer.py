@@ -18,6 +18,7 @@ from scripts.generate_submission_package import (
     build_file_1,
     build_file_2,
     build_file_3,
+    enrich_route_summary_for_planning,
     filter_interurban_routes,
     load_config,
     load_roads_dataset,
@@ -76,6 +77,7 @@ def build_scenarios(
         if not ev_df.empty and "total_ev_projected_2027" in ev_df.columns:
             total_ev_projected_2027 = int(ev_df["total_ev_projected_2027"].iloc[0])
     grid_nodes = load_grid_capacity_bundle(external_dir)
+    route_summary = enrich_route_summary_for_planning(route_summary)
 
     for spacing in spacing_options:
         for charger_policy in charger_policies:

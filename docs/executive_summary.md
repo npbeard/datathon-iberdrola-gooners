@@ -1,129 +1,109 @@
 # Executive Summary
 ## IE Iberdrola Datathon March 2026
 
-## 1. Problem Framing
+## 1. Decision Context
 
-The goal of this project is to help Iberdrola decide where new public fast-charging stations should be prioritized on Spain's interurban road network for a 2027 scenario. The challenge is not only geographic coverage. A location can look good from a mobility point of view and still be a bad choice if the nearby grid cannot support high-power chargers.
+Iberdrola does not need a generic map of roads. It needs an interurban deployment plan for 2027 that answers three practical questions:
 
-Our approach focuses on three questions:
+1. Where should new public fast-charging sites be prioritised to support long-distance EV travel?
+2. How can that network be kept as lean as possible by taking credit for existing infrastructure?
+3. Which promising locations are constrained by the electrical grid and therefore require phased deployment?
 
-1. Which interurban corridors matter most for a first charging rollout?
-2. How can we propose a network with as few stations as possible while still covering long-distance travel?
-3. Where do mobility needs and grid limitations collide, creating friction points that need reinforcement or phased deployment?
+This project addresses those questions using a reproducible pipeline that joins the RTIG road network, the official national charging-point baseline, the mandatory datos.gob.es electrification workflow, and published distributor grid-capacity files.
 
-## 2. Data Used
+## 2. What The Package Delivers
 
-The current repository is built around the Ministry of Transport RTIG road dataset retrieved through the ArcGIS REST service. After cleaning and reprojection, the working dataset contains 1,602 road segments and roughly 38,529 km of network length.
+The repository produces the three required competition CSV files plus an offline-ready map for the jury:
 
-Main fields used in the current version:
+- `File 1.csv`: global network KPI summary
+- `File 2.csv`: proposed charging locations
+- `File 3.csv`: friction points where mobility need collides with grid limits
+- `maps/proposed_charging_network.html`: self-contained BI visualization that opens locally without internet access
+- `maps/offline_scenario_explorer.html`: scenario-testing companion for the pitch
 
-- road identifier (`carretera`)
-- PK start and end (`pk_inicio`, `pk_fin`)
-- road type (`tipo_de_via`)
-- TEN-T membership (`tent`)
-- geometry and derived length
+The project is validated by automated tests and a submission checker to reduce the risk of technical disqualification.
 
-The final package now combines the RTIG road network with three additional external layers:
+## 3. Data Foundation
 
-- official NAP-DGT/MITERD charging-station baseline
-- 2027 EV projection derived from the mandatory datos.gob.es exercise
-- published demand-capacity files from i-DE, Endesa, and Viesgo
+The solution is built from official or competition-relevant sources:
 
-The remaining assumptions are no longer about whether these datasets are present. They are mainly about the siting rules applied on top of them, and they are documented in `data/submission/ASSUMPTIONS.md`.
+- Ministry of Transport RTIG road geometries for Spain's interurban corridors
+- NAP-DGT/MITERD charging-point publication to measure the existing public baseline
+- datos.gob.es electrification exercise as the mandatory EV-adoption anchor
+- Published demand-capacity files from i-DE, Endesa, and Viesgo for node-level grid constraints
 
-## 3. Methodology
+The value of this combination is that the final proposal is not purely geographic. It treats charging deployment as the intersection of corridor need and electrical feasibility.
 
-We used the following workflow:
+## 4. Methodology
 
-1. Download RTIG road geometries from the Ministry REST API and keep a local cached copy so the pipeline can still run if the service is unavailable.
-2. Clean the Esri geometry payload, validate features, and reproject the network to WGS84 for mapping.
-3. Filter the network to interurban corridors relevant to the brief, especially A-, AP-, and N- roads.
-4. Use PK ranges and route lengths as a first heuristic for proposed station spacing.
-5. Generate the required output structure:
-   - `File 1.csv`: global KPI summary
-   - `File 2.csv`: proposed charging locations
-   - `File 3.csv`: friction points
-6. Validate the final files against the datathon rules before submission.
+The final methodology is intentionally simple enough to explain in five minutes and rigorous enough to defend:
 
-This gives a reproducible package with the main external inputs already integrated.
+### Step 1: Restrict the network to the brief
 
-## 4. Current Results
+Only interurban A-, AP-, and N- corridors from the RTIG network are considered. This keeps the solution aligned with the assignment and avoids drifting into urban-centre charging logic.
 
-The current generated submission package contains:
+### Step 2: Rank corridor service need
 
-- 342 proposed charging locations in `File 2.csv`
-- 9,699 existing baseline stations in `File 1.csv`
-- 183 friction points in `File 3.csv`
-- 120,008 projected EVs in the 2027 scenario in `File 1.csv`
-- a self-contained HTML map in `maps/proposed_charging_network.html`
-- a self-contained local scenario explorer in `maps/offline_scenario_explorer.html`
+Each route receives a planning score based on:
 
-These values should be interpreted as a realistic planning package rather than exact investment commitments. Their value is that the required files exist, they pass validation, and the methodology is traceable back to official transport, charging, EV, and grid sources.
+- route length and PK span
+- TEN-T strategic relevance
+- geometric complexity
+- scarcity of existing interurban charging stations already matched to that corridor
 
-## 5. Key Findings
+This improves on a naive fixed-spacing approach because a route with strong existing coverage should not receive the same number of new sites as a corridor with similar length but a much weaker baseline.
 
-Several patterns are already visible from the current road-network analysis:
+### Step 3: Convert corridor need into a lean deployment network
 
-- TEN-T corridors account for a meaningful share of strategic interurban connectivity and are a natural starting point for a phased rollout.
-- Long interurban axes such as AP-7 and other national corridors are the most likely candidates for early deployment because they combine long-distance travel relevance with clearer spacing logic.
-- A station-placement heuristic based on route span produces a practical first network while still surfacing where grid reinforcement is likely to be needed.
-- The friction-point layer is now more credible because it no longer depends on one distributor only. The current package includes node-level demand-capacity snapshots from i-DE, Endesa, and Viesgo.
+Instead of placing stations at one rigid national interval, the model uses dynamic spacing around a 120 km planning reference:
 
-## 6. Main Assumptions And Limits
+- higher-need corridors receive tighter spacing
+- already-served corridors receive spacing credit
+- exact duplicate coordinates on the same route are merged into one site
 
-This is the most important section for the jury.
+This makes the package more consistent with the Datathon's primary objective: cover interurban mobility demand with the fewest stations possible.
 
-The current repository is much stronger than the earlier road-only version, but there are still methodological assumptions that should be stated clearly:
+### Step 4: Test each site against grid reality
 
-1. station placement still uses a spacing heuristic rather than a full optimization model
-2. charger-count decisions still depend on a policy choice (`conservative`, `balanced`, or `aggressive`) rather than a single official rule
-3. `grid_status` is based on nearest-node matching plus documented thresholds, so it should be presented as a planning signal, not as a formal access study
+Each proposed station is matched to the nearest available published distributor node. Grid status is assigned using the brief's fixed charger power of 150 kW:
 
-These limitations should be stated clearly in the final presentation. They do not weaken the submission as much as hidden placeholders would. In fact, being explicit about them makes the package more credible.
+- `Sufficient`: available capacity is at least 2x site demand
+- `Moderate`: available capacity is between 1x and 2x site demand
+- `Congested`: available capacity is below site demand
 
-## 7. Recommended 2027 Rollout Logic
+This produces a second layer of strategic value: not just where Iberdrola would like to build, but where it can build immediately versus where reinforcement should come first.
 
-Based on the current work, the most defensible rollout logic is:
+## 5. Strategic Interpretation
 
-### Phase 1
+The proposal should be read as a phased rollout plan rather than a one-shot national build:
 
-Focus on the major interurban corridors with the clearest long-distance need and strongest strategic relevance, especially TEN-T-aligned axes.
+- `Sufficient` sites are immediate deployment candidates
+- `Moderate` sites are suitable for staged rollout with limited reinforcement or careful sequencing
+- `Congested` sites should be protected strategically but treated as grid-led projects first
 
-### Phase 2
+For Iberdrola, that distinction is critical. It turns a technical map into an investment roadmap.
 
-Refine charger counts by corridor using the real baseline charging map and the 2027 EV projection so route-by-route density decisions are easier to justify.
+## 6. Business Value For Iberdrola
 
-### Phase 3
+The project creates value in four ways:
 
-Overlay real distributor capacity nodes and separate stations into:
+1. It prioritises corridors rather than isolated points, which is closer to how a national charging operator would actually plan.
+2. It avoids overbuilding by accounting for the existing interurban charging baseline.
+3. It makes grid bottlenecks explicit, reducing the risk of proposing commercially attractive but infeasible sites.
+4. It gives Iberdrola a clear "build now / phase later / reinforce first" framing for 2027.
 
-- immediately viable
-- viable with moderate upgrades
-- delayed pending reinforcement
+## 7. Remaining Assumptions
 
-This gives Iberdrola a practical way to distinguish between "best sites to build now" and "best sites to protect for later expansion."
+The remaining assumptions should be stated openly in the final submission because transparency will score better than false precision:
 
-## 8. Why This Matters For Iberdrola
+- corridor demand is estimated through public proxies, not proprietary traffic flows
+- the 2027 EV number is a stock proxy built from official registrations plus forecasted additions
+- nearest-node grid matching is a planning approximation, not a formal access study
 
-From a business point of view, the project is useful because it translates a broad electrification challenge into a shortlist of deployable locations and a second shortlist of grid bottlenecks. That is a more actionable output than a simple map of roads or a generic demand forecast.
+These assumptions are reasonable in the context of a datathon because they are explicit, evidence-based, and consistent with the available public data.
 
-Even in its current state, the repo already helps answer:
+## 8. Recommended Jury Message
 
-- where a first rollout could start
-- how to structure a minimum viable national corridor network
-- which locations need a grid conversation before a charging conversation
+The strongest closing message is:
 
-## 9. What Would Most Improve The Final Score
-
-If we had to prioritize only a few remaining tasks before submission, they would be:
-
-1. tighten the explanation of why the 342 proposed locations are enough for a first national corridor rollout
-2. present friction points as a phased execution issue, not just a technical warning
-3. keep the final numbers visible in one notebook and one short pitch
-4. make sure the jury opens the offline scenario explorer during the demo
-
-## 10. Final Assessment
-
-The strongest part of this project today is that it combines a reproducible technical pipeline with official charging, EV, and grid inputs, and turns them into a package the jury can open locally without setup problems.
-
-That makes it a credible datathon submission. The remaining opportunity is not to add more software complexity, but to present the current results in a sharper and more Iberdrola-specific way.
+This is not just a map of where chargers could go. It is a short-term Iberdrola deployment strategy that minimises redundant sites, respects real grid constraints, and distinguishes immediately viable corridors from those that should be phased with reinforcement.

@@ -1,0 +1,103 @@
+
+================================================================================
+                    RTIG ROADS NETWORK ANALYSIS REPORT
+                        IE Iberdrola Datathon 2026
+                            Generated: 2026-04-10 14:38:14
+================================================================================
+
+1. EXECUTIVE SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+This project proposes a 2027 interurban charging network for Spain that combines
+official transport geometry, existing public charging baseline, EV electrification
+forecasting, and distributor grid-capacity constraints into one reproducible package.
+
+Current package snapshot:
+  • Proposed charging sites: 269
+  • Existing interurban baseline sites: 9,699
+  • Friction points needing phased deployment: 145
+  • Projected EV stock proxy for 2027: 549,226
+
+
+2. DATASET OVERVIEW
+────────────────────────────────────────────────────────────────────────────────
+
+Network Statistics:
+  • Number of RTIG segments analysed: 1,602
+  • Total network length: 38,529 km
+  • Average segment length: 24.05 km
+  • TEN-T segments: 535 (33.4%)
+  • Geometry validity: 100.0%
+
+
+3. METHODOLOGY
+────────────────────────────────────────────────────────────────────────────────
+
+The final proposal follows four planning steps:
+  1. Filter the RTIG network to interurban A-, AP-, and N- corridors aligned with the brief.
+  2. Measure each corridor's strategic need using route span, total length, TEN-T share,
+     geometric complexity, and scarcity of existing matched charging supply.
+  3. Convert corridor need into dynamic station spacing instead of using one national
+     fixed gap. High-need corridors receive denser spacing; routes with stronger
+     baseline coverage receive more spacing credit.
+  4. Classify grid viability by matching each proposed site to the nearest published
+     distributor node and comparing available capacity against charger demand
+     (`n_chargers_proposed × 150 kW`).
+
+
+4. OUTPUTS FOR THE JURY
+────────────────────────────────────────────────────────────────────────────────
+
+Required CSV package:
+  ✓ File 1.csv - global network KPI scorecard
+  ✓ File 2.csv - proposed charging locations
+  ✓ File 3.csv - friction points
+
+Recommended visual deliverables:
+  ✓ maps/proposed_charging_network.html - self-contained offline map
+  ✓ maps/offline_scenario_explorer.html - scenario-testing companion for the pitch
+
+Top routes in the current proposal:
+  • A-66: 6 sites / 48 chargers
+  • A-7: 5 sites / 48 chargers
+  • A-2: 5 sites / 40 chargers
+  • A-4: 5 sites / 40 chargers
+  • N-340: 5 sites / 40 chargers
+  • N-120A: 5 sites / 20 chargers
+  • N-420A: 5 sites / 20 chargers
+  • A-1: 4 sites / 32 chargers
+
+
+5. STRATEGIC INTERPRETATION
+────────────────────────────────────────────────────────────────────────────────
+
+The proposal is intentionally built as a phased investment plan:
+  • Sufficient nodes are "build now" candidates.
+  • Moderate nodes are "build with limited reinforcement / staged rollout" candidates.
+  • Congested nodes are "protect the site, solve the grid first" candidates.
+
+This framing matters for Iberdrola because it separates mobility opportunity from
+electrical feasibility instead of forcing every route into one go/no-go decision.
+
+
+6. LIMITATIONS TO DISCLOSE
+────────────────────────────────────────────────────────────────────────────────
+
+  • Corridor demand is still estimated from public proxies rather than proprietary traffic traces.
+  • The 2027 EV figure is a stock proxy built from official registrations and forecasted additions.
+  • Nearest-node grid matching is a planning approximation, not a formal access study.
+
+
+7. RECOMMENDED SUBMISSION STORY
+────────────────────────────────────────────────────────────────────────────────
+
+Lead the jury through three messages:
+  1. We minimise new sites by giving credit to existing interurban infrastructure.
+  2. We do not confuse "good mobility location" with "grid-feasible location".
+  3. We give Iberdrola a rollout queue, not just a map.
+
+
+================================================================================
+                              END OF REPORT
+                    Report generated: 2026-04-10 14:38:14
+================================================================================

@@ -1,2 +1,2 @@
-target_year,total_ev_projected_2027,method,source_repo
-2027,120008,"SARIMA(1,0,2)(1,0,1,12) on official datos.gob.es EV turismo matriculations",Admindatosgobes/Laboratorio-de-Datos
+target_year,total_ev_projected_2027,projected_new_registrations_target_year,historical_registrations_through_2023,method,source_repo
+2027,549226,120008,173337,"Cumulative EV stock proxy built from cached official datos.gob.es EV turismo matriculations plus SARIMA(1,0,2)(1,0,1,12) forecasted registrations through the target year",Admindatosgobes/Laboratorio-de-Datos

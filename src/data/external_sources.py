@@ -261,7 +261,11 @@ def build_ev_projection_from_official_repo(
     forecast["year"] = forecast["date"].dt.year
     forecast["month"] = forecast["date"].dt.month
 
-    projected_total = int(round(forecast.loc[forecast["year"] == target_year, "forecast_mean"].sum()))
+    historical_stock = int(round(monthly_df["electric_turismo_registrations"].sum()))
+    projected_registrations_target_year = int(round(forecast.loc[forecast["year"] == target_year, "forecast_mean"].sum()))
+    projected_total = historical_stock + int(
+        round(forecast.loc[forecast["year"] <= target_year, "forecast_mean"].sum())
+    )
     monthly_output_path.parent.mkdir(parents=True, exist_ok=True)
     projection_output_path.parent.mkdir(parents=True, exist_ok=True)
     monthly_df.to_csv(monthly_output_path, index=False)
@@ -270,7 +274,68 @@ def build_ev_projection_from_official_repo(
             {
                 "target_year": target_year,
                 "total_ev_projected_2027": projected_total,
-                "method": "SARIMA(1,0,2)(1,0,1,12) on official datos.gob.es EV turismo matriculations",
+                "projected_new_registrations_target_year": projected_registrations_target_year,
+                "historical_registrations_through_2023": historical_stock,
+                "method": (
+                    "Cumulative EV stock proxy built from official datos.gob.es EV turismo matriculations "
+                    "plus SARIMA(1,0,2)(1,0,1,12) forecasted registrations through the target year"
+                ),
+                "source_repo": "Admindatosgobes/Laboratorio-de-Datos",
+            }
+        ]
+    ).to_csv(projection_output_path, index=False)
+
+    return {
+        "monthly_history": monthly_df,
+        "forecast_monthly": forecast[
+            ["date", "year", "month", "forecast_mean", "forecast_ci_lower", "forecast_ci_upper"]
+        ].copy(),
+        "projected_total": projected_total,
+    }
+
+
+def build_ev_projection_from_monthly_history(
+    monthly_history_path: Path,
+    projection_output_path: Path,
+    target_year: int = 2027,
+) -> Dict[str, object]:
+    monthly_df = pd.read_csv(monthly_history_path, parse_dates=["date"]).sort_values("date").reset_index(drop=True)
+    series = monthly_df.set_index("date")["electric_turismo_registrations"]
+
+    model = sm.tsa.statespace.SARIMAX(
+        np.log(series),
+        order=(1, 0, 2),
+        seasonal_order=(1, 0, 1, 12),
+    )
+    fitted = model.fit(disp=False)
+
+    last_year = int(monthly_df["date"].dt.year.max())
+    horizon_months = max(12, (target_year - last_year) * 12)
+    forecast = fitted.get_forecast(horizon_months).summary_frame(alpha=0.5)
+    forecast["forecast_mean"] = np.exp(forecast["mean"])
+    forecast["forecast_ci_lower"] = np.exp(forecast["mean_ci_lower"])
+    forecast["forecast_ci_upper"] = np.exp(forecast["mean_ci_upper"])
+    forecast["date"] = pd.date_range(f"{last_year + 1}-01-01", periods=horizon_months, freq="MS")
+    forecast["year"] = forecast["date"].dt.year
+    forecast["month"] = forecast["date"].dt.month
+
+    historical_stock = int(round(monthly_df["electric_turismo_registrations"].sum()))
+    projected_registrations_target_year = int(round(forecast.loc[forecast["year"] == target_year, "forecast_mean"].sum()))
+    projected_total = historical_stock + int(
+        round(forecast.loc[forecast["year"] <= target_year, "forecast_mean"].sum())
+    )
+
+    pd.DataFrame(
+        [
+            {
+                "target_year": target_year,
+                "total_ev_projected_2027": projected_total,
+                "projected_new_registrations_target_year": projected_registrations_target_year,
+                "historical_registrations_through_2023": historical_stock,
+                "method": (
+                    "Cumulative EV stock proxy built from cached official datos.gob.es EV turismo "
+                    "matriculations plus SARIMA(1,0,2)(1,0,1,12) forecasted registrations through the target year"
+                ),
                 "source_repo": "Admindatosgobes/Laboratorio-de-Datos",
             }
         ]
@@ -572,7 +637,15 @@ def try_build_official_external_inputs(
 
     projection_path = external_dir / "ev_projection_2027.csv"
     monthly_ev_path = external_dir / "ev_monthly_counts_official.csv"
-    if not projection_path.exists():
+    projection_is_stock_style = False
+    if projection_path.exists():
+        existing_projection = pd.read_csv(projection_path)
+        if not existing_projection.empty and "method" in existing_projection.columns:
+            projection_is_stock_style = "stock proxy" in str(existing_projection["method"].iloc[0]).lower()
+
+    if monthly_ev_path.exists() and (not projection_path.exists() or not projection_is_stock_style):
+        build_ev_projection_from_monthly_history(monthly_ev_path, projection_path, target_year=target_year)
+    elif not projection_path.exists():
         build_ev_projection_from_official_repo(monthly_ev_path, projection_path, target_year=target_year)
 
     edistrib_path = external_dir / "edistribucion_capacity_2026_03.csv"

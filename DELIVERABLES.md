@@ -131,10 +131,10 @@ pytest -q
 - **Geographic Coverage**: Spain (EPSG:4326)
 
 ### Submission Results
-- **Proposed charging locations**: 342
+- **Proposed charging locations**: 269
 - **Existing baseline stations matched to corridors**: 9,699
-- **Friction points**: 183
-- **Projected EV stock for 2027**: 120,008
+- **Friction points**: 145
+- **Projected EV stock proxy for 2027**: 549,226
 - **Grid matching coverage**: i-DE, Endesa, and Viesgo all represented
 
 ### TEN-T Analysis
