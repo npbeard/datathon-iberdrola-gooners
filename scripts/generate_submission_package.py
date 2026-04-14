@@ -37,6 +37,14 @@ STATUS_COLORS = {
     "Moderate": "orange",
     "Congested": "red",
 }
+BUSINESS_CATEGORY_RULES: Tuple[Tuple[str, Tuple[str, ...], float], ...] = (
+    ("food", ("restaurant", "restaurante", "cafeter", "cafe", "fast food", "burger", "meson"), 3.0),
+    ("lodging", ("hotel", "hostal", "hostel", "motel", "guest house", "aparthotel"), 2.7),
+    ("fuel", ("repsol", "cepsa", "bp", "shell", "galp", "gasolin", "petrol"), 2.4),
+    ("parking", ("parking", "aparcamiento", "park&ride"), 1.8),
+    ("retail", ("supermerc", "supermarket", "centro comercial", "mall", "convenience", "shop"), 2.0),
+    ("services", ("area de servicio", "service area", "autogrill", "rest area"), 2.2),
+)
 FILE_2_COLUMNS = [
     "location_id",
     "latitude",
@@ -117,7 +125,7 @@ def _minmax_normalize(series: pd.Series) -> pd.Series:
 
 def enrich_route_summary_for_planning(route_summary: pd.DataFrame) -> pd.DataFrame:
     enriched = route_summary.copy()
-    for column in ["existing_station_count", "coverage_gap_score"]:
+    for column in ["existing_station_count", "coverage_gap_score", "business_support_score"]:
         if column not in enriched.columns:
             enriched[column] = 0.0
 
@@ -139,19 +147,22 @@ def enrich_route_summary_for_planning(route_summary: pd.DataFrame) -> pd.DataFra
     enriched["span_norm"] = _minmax_normalize(enriched["pk_span_km"].astype(float))
     enriched["complexity_norm"] = _minmax_normalize(enriched["mean_complexity"].astype(float))
     enriched["baseline_gap_norm"] = _minmax_normalize(enriched["coverage_gap_score"].astype(float))
+    enriched["business_norm"] = _minmax_normalize(enriched["business_support_score"].astype(float))
     enriched["route_hierarchy_score"] = enriched["carretera"].map(route_hierarchy).astype(float)
     enriched["strategic_corridor_score"] = (
-        0.30 * enriched["length_norm"]
-        + 0.20 * enriched["span_norm"]
-        + 0.20 * enriched["tent_share"].astype(float)
-        + 0.15 * enriched["route_hierarchy_score"]
+        0.27 * enriched["length_norm"]
+        + 0.18 * enriched["span_norm"]
+        + 0.18 * enriched["tent_share"].astype(float)
+        + 0.12 * enriched["route_hierarchy_score"]
         + 0.05 * enriched["complexity_norm"]
         + 0.10 * enriched["baseline_gap_norm"]
+        + 0.10 * enriched["business_norm"]
     )
     enriched["service_need_score"] = (
-        0.55 * enriched["strategic_corridor_score"]
+        0.50 * enriched["strategic_corridor_score"]
         + 0.25 * enriched["baseline_gap_norm"]
-        + 0.20 * (1.0 / (1.0 + np.log1p(enriched["existing_station_count"].astype(float))))
+        + 0.15 * (1.0 / (1.0 + np.log1p(enriched["existing_station_count"].astype(float))))
+        + 0.10 * enriched["business_norm"]
     )
     return enriched.sort_values(
         ["service_need_score", "strategic_corridor_score", "pk_span_km"],
@@ -303,11 +314,14 @@ def deduplicate_station_rows(file_2: pd.DataFrame) -> pd.DataFrame:
     status_rank = {"Sufficient": 0, "Moderate": 1, "Congested": 2}
     rows = file_2.copy()
     rows["grid_status_rank"] = rows["grid_status"].map(status_rank).fillna(0).astype(int)
+    if "business_score" not in rows.columns:
+        rows["business_score"] = 0.0
     aggregated = (
         rows.groupby(["latitude", "longitude", "route_segment"], as_index=False)
         .agg(
             n_chargers_proposed=("n_chargers_proposed", "sum"),
             grid_status_rank=("grid_status_rank", "max"),
+            business_score=("business_score", "max"),
         )
         .sort_values(["route_segment", "latitude", "longitude"])
         .reset_index(drop=True)
@@ -315,7 +329,241 @@ def deduplicate_station_rows(file_2: pd.DataFrame) -> pd.DataFrame:
     rank_status = {value: key for key, value in status_rank.items()}
     aggregated["grid_status"] = aggregated["grid_status_rank"].map(rank_status)
     aggregated["location_id"] = [f"IBE_{idx:03d}" for idx in range(1, len(aggregated) + 1)]
-    return aggregated[FILE_2_COLUMNS]
+    base_columns = FILE_2_COLUMNS + [column for column in aggregated.columns if column not in FILE_2_COLUMNS]
+    return aggregated[base_columns]
+
+
+def _route_family(route_segment: str) -> str:
+    route_segment = str(route_segment)
+    digits = "".join(re.findall(r"\d+", route_segment))
+    if digits:
+        return digits
+    return route_segment
+
+
+def _haversine_pair_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _business_text(row: pd.Series) -> str:
+    values = [
+        str(row.get("site_name", "") or ""),
+        str(row.get("address_text", "") or ""),
+        str(row.get("operator_name", "") or ""),
+    ]
+    return " ".join(values).strip().lower()
+
+
+def _extract_business_tags(text: str) -> Tuple[List[str], float]:
+    tags: List[str] = []
+    score = 0.0
+    normalized = text.lower()
+    for category, keywords, weight in BUSINESS_CATEGORY_RULES:
+        if any(keyword in normalized for keyword in keywords):
+            tags.append(category)
+            score += weight
+    return tags, score
+
+
+def load_business_context(external_dir: Path) -> Tuple[pd.DataFrame, str]:
+    matched_path = external_dir / "existing_interurban_stations_matched.csv"
+    if not matched_path.exists():
+        return pd.DataFrame(columns=["latitude", "longitude", "route_segment", "business_score", "business_tags"]), f"missing:{matched_path.name}"
+
+    matched = pd.read_csv(matched_path)
+    if matched.empty:
+        return pd.DataFrame(columns=["latitude", "longitude", "route_segment", "business_score", "business_tags"]), f"empty:{matched_path.name}"
+
+    if "is_interurban_match" in matched.columns:
+        matched = matched[matched["is_interurban_match"].fillna(False)].copy()
+    if "distance_to_route_km" in matched.columns:
+        matched = matched[matched["distance_to_route_km"].fillna(np.inf) <= 8.0].copy()
+    matched = matched.dropna(subset=["latitude", "longitude"]).copy()
+    if "carretera" in matched.columns:
+        matched["route_segment"] = matched["carretera"].fillna("")
+    else:
+        matched["route_segment"] = ""
+
+    texts = matched.apply(_business_text, axis=1)
+    tag_payload = texts.apply(_extract_business_tags)
+    matched["business_tags"] = tag_payload.apply(lambda item: ", ".join(item[0]))
+    matched["business_score"] = tag_payload.apply(lambda item: float(item[1]))
+    matched = matched[matched["business_score"] > 0].copy()
+
+    if matched.empty:
+        return pd.DataFrame(columns=["latitude", "longitude", "route_segment", "business_score", "business_tags"]), f"no_business_matches:{matched_path.name}"
+
+    matched["route_family"] = matched["route_segment"].map(_route_family)
+    return (
+        matched[["latitude", "longitude", "route_segment", "route_family", "business_score", "business_tags"]].reset_index(drop=True),
+        f"loaded:{matched_path.name}",
+    )
+
+
+def enrich_route_summary_with_business(route_summary: pd.DataFrame, business_context: pd.DataFrame) -> pd.DataFrame:
+    enriched = route_summary.copy()
+    if "business_support_score" not in enriched.columns:
+        enriched["business_support_score"] = 0.0
+    if "business_anchor_count" not in enriched.columns:
+        enriched["business_anchor_count"] = 0
+    if business_context is None or business_context.empty:
+        return enriched
+
+    grouped = (
+        business_context.groupby("route_segment", as_index=False)
+        .agg(
+            business_support_score=("business_score", "sum"),
+            business_anchor_count=("business_score", "size"),
+        )
+    )
+    grouped = grouped.rename(
+        columns={
+            "business_support_score": "business_support_score_new",
+            "business_anchor_count": "business_anchor_count_new",
+        }
+    )
+    enriched = enriched.merge(grouped, how="left", left_on="carretera", right_on="route_segment")
+    enriched["business_support_score"] = enriched["business_support_score_new"].fillna(
+        enriched["business_support_score"]
+    )
+    enriched["business_anchor_count"] = (
+        enriched["business_anchor_count_new"].fillna(enriched["business_anchor_count"]).fillna(0).astype(int)
+    )
+    return enriched.drop(
+        columns=["route_segment", "business_support_score_new", "business_anchor_count_new"],
+        errors="ignore",
+    )
+
+
+def _business_signal_for_point(
+    latitude: float,
+    longitude: float,
+    route_segment: str,
+    business_context: pd.DataFrame | None,
+    radius_km: float = 20.0,
+) -> float:
+    if business_context is None or business_context.empty:
+        return 0.0
+
+    route_family = _route_family(route_segment)
+    candidates = business_context[business_context["route_family"] == route_family].copy()
+    if candidates.empty:
+        candidates = business_context
+
+    score = 0.0
+    for _, anchor in candidates.iterrows():
+        distance_km = _haversine_pair_km(
+            float(latitude),
+            float(longitude),
+            float(anchor["latitude"]),
+            float(anchor["longitude"]),
+        )
+        if distance_km > radius_km:
+            continue
+        score += float(anchor["business_score"]) * math.exp(-(distance_km ** 2) / (2 * (radius_km / 2.5) ** 2))
+    return score
+
+
+def select_business_weighted_point(
+    route_segments: gpd.GeoDataFrame,
+    route_row: pd.Series,
+    target_pk: float,
+    business_context: pd.DataFrame | None,
+    search_window_km: float,
+) -> Tuple[object, float]:
+    route_start = float(min(route_row["min_pk"], route_row["max_pk"]))
+    route_end = float(max(route_row["min_pk"], route_row["max_pk"]))
+    offsets = sorted({0.0, -search_window_km, search_window_km, -(search_window_km / 2), search_window_km / 2})
+    best_point = None
+    best_signal = -1.0
+    best_penalty = float("inf")
+
+    for offset in offsets:
+        candidate_pk = min(route_end, max(route_start, target_pk + offset))
+        point = interpolate_station_point(route_segments, candidate_pk)
+        signal = _business_signal_for_point(
+            latitude=float(point.y),
+            longitude=float(point.x),
+            route_segment=str(route_row["carretera"]),
+            business_context=business_context,
+        )
+        center_penalty = abs(offset)
+        if signal > best_signal or (math.isclose(signal, best_signal) and center_penalty < best_penalty):
+            best_point = point
+            best_signal = signal
+            best_penalty = center_penalty
+
+    return best_point, best_signal
+
+
+def _should_merge_nearby_sites(left: pd.Series, right: pd.Series, merge_distance_km: float) -> bool:
+    distance_km = _haversine_pair_km(
+        float(left["latitude"]),
+        float(left["longitude"]),
+        float(right["latitude"]),
+        float(right["longitude"]),
+    )
+    if distance_km > merge_distance_km:
+        return False
+    if distance_km <= 2.0:
+        return True
+    return _route_family(str(left["route_segment"])) == _route_family(str(right["route_segment"]))
+
+
+def merge_nearby_station_rows(file_2: pd.DataFrame, merge_distance_km: float = 8.0) -> pd.DataFrame:
+    if file_2.empty:
+        return file_2.copy()
+
+    status_rank = {"Sufficient": 0, "Moderate": 1, "Congested": 2}
+    working = file_2.copy().reset_index(drop=True)
+    consumed: set[int] = set()
+    merged_rows: List[Dict] = []
+
+    for idx, row in working.iterrows():
+        if idx in consumed:
+            continue
+
+        cluster = [idx]
+        consumed.add(idx)
+        for other_idx in range(idx + 1, len(working)):
+            if other_idx in consumed:
+                continue
+            if _should_merge_nearby_sites(row, working.loc[other_idx], merge_distance_km=merge_distance_km):
+                cluster.append(other_idx)
+                consumed.add(other_idx)
+
+        cluster_df = working.loc[cluster].copy()
+        if "business_score" not in cluster_df.columns:
+            cluster_df["business_score"] = 0.0
+        representative = cluster_df.sort_values(
+            by=["business_score", "n_chargers_proposed", "route_segment"],
+            ascending=[False, False, True],
+        ).iloc[0]
+        business_score = float(cluster_df["business_score"].max())
+        merged_rows.append(
+            {
+                "location_id": "",
+                "latitude": round(float(cluster_df["latitude"].mean()), 6),
+                "longitude": round(float(cluster_df["longitude"].mean()), 6),
+                "route_segment": representative["route_segment"],
+                "n_chargers_proposed": int(cluster_df["n_chargers_proposed"].sum()),
+                "grid_status": max(cluster_df["grid_status"], key=lambda value: status_rank.get(value, 0)),
+                "business_score": round(business_score, 2),
+            }
+        )
+
+    merged = pd.DataFrame(merged_rows)
+    merged["location_id"] = [f"IBE_{idx:03d}" for idx in range(1, len(merged) + 1)]
+    base_columns = FILE_2_COLUMNS + [column for column in merged.columns if column not in FILE_2_COLUMNS]
+    return merged[base_columns]
 
 
 def build_file_2(
@@ -325,6 +573,7 @@ def build_file_2(
     min_route_span_km: float,
     charger_policy: str = "balanced",
     grid_policy: str = "balanced",
+    business_context: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     rows: List[Dict] = []
 
@@ -336,6 +585,7 @@ def build_file_2(
             continue
 
         n_chargers = chargers_for_route(route_row, charger_policy=charger_policy)
+        search_window_km = min(18.0, max(6.0, _dynamic_spacing_km(route_row, spacing_km) * 0.18))
         need_score = float(route_row.get("service_need_score", 0.0))
         if need_score >= 0.70:
             grid_status = "Congested"
@@ -345,7 +595,13 @@ def build_file_2(
             grid_status = assign_proxy_grid_status(int(route_row.name), grid_policy=grid_policy)
 
         for target_pk in target_positions:
-            point = interpolate_station_point(route_segments, target_pk)
+            point, business_signal = select_business_weighted_point(
+                route_segments,
+                route_row,
+                target_pk,
+                business_context=business_context,
+                search_window_km=search_window_km,
+            )
             rows.append(
                 {
                     "location_id": "",
@@ -354,11 +610,13 @@ def build_file_2(
                     "route_segment": route_row["carretera"],
                     "n_chargers_proposed": n_chargers,
                     "grid_status": grid_status,
+                    "business_score": round(float(business_signal), 2),
                 }
             )
 
-    file_2 = pd.DataFrame(rows, columns=FILE_2_COLUMNS)
-    return deduplicate_station_rows(file_2)
+    file_2 = pd.DataFrame(rows)
+    file_2 = deduplicate_station_rows(file_2)
+    return merge_nearby_station_rows(file_2)
 
 
 def build_file_3(file_2: pd.DataFrame, charger_power_kw: int) -> pd.DataFrame:
@@ -542,25 +800,53 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
       border-radius: 18px;
       border: 1px solid rgba(31,41,55,0.10);
     }}
-    .legend {{
-      display: flex;
-      gap: 16px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .dot {{
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      margin-right: 6px;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
+	    .legend {{
+	      display: flex;
+	      gap: 16px;
+	      flex-wrap: wrap;
+	      margin-top: 10px;
+	      color: var(--muted);
+	      font-size: 13px;
+	    }}
+	    .legend-block {{
+	      margin-top: 12px;
+	      padding: 12px 14px;
+	      border-radius: 14px;
+	      background: rgba(255,255,255,0.62);
+	      border: 1px solid rgba(31,41,55,0.08);
+	    }}
+	    .legend-title {{
+	      font-size: 12px;
+	      letter-spacing: 0.06em;
+	      text-transform: uppercase;
+	      color: var(--muted);
+	      margin-bottom: 8px;
+	    }}
+	    .dot {{
+	      display: inline-block;
+	      width: 10px;
+	      height: 10px;
+	      border-radius: 50%;
+	      margin-right: 6px;
+	    }}
+	    .size-chip {{
+	      display: inline-flex;
+	      align-items: center;
+	      gap: 8px;
+	      margin-right: 14px;
+	    }}
+	    .size-circle {{
+	      display: inline-block;
+	      border-radius: 50%;
+	      background: rgba(31,41,55,0.16);
+	      border: 1px solid rgba(31,41,55,0.18);
+	      vertical-align: middle;
+	      flex: 0 0 auto;
+	    }}
+	    table {{
+	      width: 100%;
+	      border-collapse: collapse;
+	      font-size: 13px;
       margin-top: 8px;
     }}
     th, td {{
@@ -586,35 +872,42 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
     <section class="hero">
       <div class="card">
         <h1>2027 Interurban Charging Network Proposal</h1>
-        <p>This self-contained file can be shared offline with the jury. Proposed sites are prioritised using corridor coverage need, strategic relevance, baseline charging scarcity, and grid feasibility.</p>
+        <p>This self-contained file can be shared offline with the jury. Proposed sites are prioritised using corridor coverage need, strategic relevance, baseline charging scarcity, nearby business amenities, and grid feasibility.</p>
         <div class="kpis">
           <div class="kpi"><div class="label">Proposed Sites</div><div class="value" id="kpiStations">0</div></div>
           <div class="kpi"><div class="label">Moderate/Congested</div><div class="value" id="kpiFriction">0</div></div>
           <div class="kpi"><div class="label">Route Segments Covered</div><div class="value" id="kpiRoutes">0</div></div>
         </div>
       </div>
-      <div class="card">
-        <h2>Reading Guide</h2>
-        <table>
-          <tbody>
-            <tr><th>Status</th><th>Meaning</th></tr>
-            <tr><td><span class="dot" style="background: var(--sufficient)"></span>Sufficient</td><td>Nearest node comfortably supports the proposed fast chargers.</td></tr>
-            <tr><td><span class="dot" style="background: var(--moderate)"></span>Moderate</td><td>Site is viable but should be phased with limited reinforcement or careful sequencing.</td></tr>
-            <tr><td><span class="dot" style="background: var(--congested)"></span>Congested</td><td>Mobility need exists, but grid reinforcement should precede full deployment.</td></tr>
-          </tbody>
-        </table>
-        <p class="hint">Select a station on the map to inspect the route, charger count, and grid status.</p>
-      </div>
-    </section>
-    <section class="layout">
-      <div class="card">
-        <svg id="map" viewBox="0 0 900 620" role="img" aria-label="Spain charging proposal map"></svg>
-        <div class="legend">
-          <span><span class="dot" style="background: var(--sufficient)"></span>Sufficient</span>
-          <span><span class="dot" style="background: var(--moderate)"></span>Moderate</span>
-          <span><span class="dot" style="background: var(--congested)"></span>Congested</span>
-        </div>
-      </div>
+	      <div class="card">
+	        <h2>Reading Guide</h2>
+	        <table>
+	          <tbody>
+	            <tr><th>Status</th><th>Meaning</th></tr>
+	            <tr><td><span class="dot" style="background: var(--sufficient)"></span>Sufficient</td><td>Color indicates <b>grid feasibility</b>. Here the nearest published grid node appears to support the proposed site comfortably.</td></tr>
+	            <tr><td><span class="dot" style="background: var(--moderate)"></span>Moderate</td><td>Color still refers to <b>grid feasibility</b>. The site is plausible, but phased rollout or limited reinforcement may be needed.</td></tr>
+	            <tr><td><span class="dot" style="background: var(--congested)"></span>Congested</td><td>Color still refers to <b>grid feasibility</b>. Mobility need exists, but grid reinforcement should precede full deployment.</td></tr>
+	          </tbody>
+	        </table>
+	        <div class="legend-block">
+	          <div class="legend-title">Dot Size</div>
+	          <div class="legend">
+	            <span class="size-chip"><span class="size-circle" style="width:10px;height:10px;"></span>Smaller dot = fewer chargers at that site</span>
+	            <span class="size-chip"><span class="size-circle" style="width:18px;height:18px;"></span>Larger dot = more chargers at that site</span>
+	          </div>
+	        </div>
+	        <p class="hint">Each dot is one proposed station site. Candidate locations are also nudged toward nearby restaurants, hotels, fuel, parking, and retail services when those amenities are visible in the baseline interurban ecosystem.</p>
+	      </div>
+	    </section>
+	    <section class="layout">
+	      <div class="card">
+	        <svg id="map" viewBox="0 0 900 620" role="img" aria-label="Spain charging proposal map"></svg>
+	        <div class="legend">
+	          <span><span class="dot" style="background: var(--sufficient)"></span>Sufficient grid</span>
+	          <span><span class="dot" style="background: var(--moderate)"></span>Moderate grid</span>
+	          <span><span class="dot" style="background: var(--congested)"></span>Congested grid</span>
+	        </div>
+	      </div>
       <div class="card">
         <h2>Station Details</h2>
         <table>
@@ -623,6 +916,7 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
             <tr><th>Route</th><td>-</td></tr>
             <tr><th>Chargers</th><td>-</td></tr>
             <tr><th>Grid</th><td>-</td></tr>
+            <tr><th>Business Fit Score</th><td>-</td></tr>
             <tr><th>Coordinates</th><td>-</td></tr>
           </tbody>
         </table>
@@ -640,9 +934,9 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
     const stations = {points_json};
     const width = 900;
     const height = 620;
-    const map = document.getElementById('map');
-    const NS = 'http://www.w3.org/2000/svg';
-    const colors = {{
+	    const map = document.getElementById('map');
+	    const NS = 'http://www.w3.org/2000/svg';
+	    const colors = {{
       Sufficient: getComputedStyle(document.documentElement).getPropertyValue('--sufficient').trim(),
       Moderate: getComputedStyle(document.documentElement).getPropertyValue('--moderate').trim(),
       Congested: getComputedStyle(document.documentElement).getPropertyValue('--congested').trim(),
@@ -652,13 +946,29 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
       const y = height - (((lat - bounds.minLat) / (bounds.maxLat - bounds.minLat)) * (height - 50) + 25);
       return [x, y];
     }}
-    function add(tag, attrs, parent) {{
-      const node = document.createElementNS(NS, tag);
-      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
-      parent.appendChild(node);
-      return node;
-    }}
-    add('rect', {{x: 0, y: 0, width, height, fill: '#f8f5ef'}}, map);
+	    function add(tag, attrs, parent) {{
+	      const node = document.createElementNS(NS, tag);
+	      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
+	      parent.appendChild(node);
+	      return node;
+	    }}
+	    function spreadPoint(baseX, baseY, radius, placed) {{
+	      const minGap = Math.max(12, radius * 1.8);
+	      let x = baseX;
+	      let y = baseY;
+	      let attempts = 0;
+	      while (attempts < 24) {{
+	        const conflict = placed.find((point) => Math.hypot(point.x - x, point.y - y) < point.r + minGap);
+	        if (!conflict) return [x, y];
+	        attempts += 1;
+	        const angle = attempts * 1.9;
+	        const offset = minGap * (0.45 + attempts / 10);
+	        x = baseX + Math.cos(angle) * offset;
+	        y = baseY + Math.sin(angle) * offset;
+	      }}
+	      return [x, y];
+	    }}
+	    add('rect', {{x: 0, y: 0, width, height, fill: '#f8f5ef'}}, map);
     roadLines.forEach((line) => {{
       if (!line.length) return;
       const d = line.map(([lon, lat], idx) => {{
@@ -673,32 +983,48 @@ def save_map(file_2: pd.DataFrame, map_output: Path, roads_gdf: gpd.GeoDataFrame
         'stroke-linecap': 'round',
         opacity: '0.85',
       }}, map);
-    }});
-    const detailBody = document.getElementById('detailBody');
-    function updateDetails(station) {{
+	    }});
+	    const detailBody = document.getElementById('detailBody');
+	    function updateDetails(station) {{
       detailBody.innerHTML = `
         <tr><th>Location</th><td>${{station.location_id}}</td></tr>
         <tr><th>Route</th><td>${{station.route_segment}}</td></tr>
         <tr><th>Chargers</th><td>${{station.n_chargers_proposed}}</td></tr>
-        <tr><th>Grid</th><td>${{station.grid_status}}</td></tr>
-        <tr><th>Coordinates</th><td>${{station.latitude.toFixed(4)}}, ${{station.longitude.toFixed(4)}}</td></tr>`;
-    }}
-    stations.forEach((station, idx) => {{
-      const [cx, cy] = project(station.longitude, station.latitude);
-      const circle = add('circle', {{
-        cx,
-        cy,
-        r: Math.max(4, 3 + station.n_chargers_proposed / 2),
-        fill: colors[station.grid_status] || '#4b5563',
-        stroke: 'rgba(255,255,255,0.95)',
-        'stroke-width': '1.5',
-        opacity: '0.92',
-        tabindex: 0,
-      }}, map);
-      circle.addEventListener('click', () => updateDetails(station));
-      circle.addEventListener('mouseenter', () => updateDetails(station));
-      if (idx === 0) updateDetails(station);
-    }});
+	        <tr><th>Grid</th><td>${{station.grid_status}}</td></tr>
+	        <tr><th>Business Fit Score</th><td>${{station.business_score ? (station.business_score.toFixed(2) + ' (higher = better)') : 'Low / neutral'}}</td></tr>
+	        <tr><th>Coordinates</th><td>${{station.latitude.toFixed(4)}}, ${{station.longitude.toFixed(4)}}</td></tr>`;
+	    }}
+	    const placedStations = [];
+	    stations.forEach((station, idx) => {{
+	      const [baseX, baseY] = project(station.longitude, station.latitude);
+	      const radius = Math.max(4, 3 + station.n_chargers_proposed / 2);
+	      const [cx, cy] = spreadPoint(baseX, baseY, radius, placedStations);
+	      placedStations.push({{x: cx, y: cy, r: radius}});
+	      const circle = add('circle', {{
+	        cx,
+	        cy,
+	        r: radius,
+	        fill: colors[station.grid_status] || '#4b5563',
+	        stroke: 'rgba(255,255,255,0.95)',
+	        'stroke-width': '1.5',
+	        opacity: '0.92',
+	        tabindex: 0,
+	      }}, map);
+	      if (Math.hypot(cx - baseX, cy - baseY) > 1.5) {{
+	        add('line', {{
+	          x1: baseX,
+	          y1: baseY,
+	          x2: cx,
+	          y2: cy,
+	          stroke: 'rgba(31,41,55,0.18)',
+	          'stroke-width': '0.8',
+	          'stroke-dasharray': '2 2',
+	        }}, map);
+	      }}
+	      circle.addEventListener('click', () => updateDetails(station));
+	      circle.addEventListener('mouseenter', () => updateDetails(station));
+	      if (idx === 0) updateDetails(station);
+	    }});
     document.getElementById('kpiStations').textContent = stations.length.toLocaleString();
     document.getElementById('kpiFriction').textContent = stations.filter((row) => row.grid_status !== 'Sufficient').length.toLocaleString();
     document.getElementById('kpiRoutes').textContent = new Set(stations.map((row) => row.route_segment)).size.toLocaleString();
@@ -724,6 +1050,7 @@ def save_assumptions_note(
     baseline_status: str,
     ev_status: str,
     grid_status: str,
+    business_status: str,
     station_spacing_km: float,
 ) -> None:
     note = f"""# Submission Assumptions
@@ -733,9 +1060,11 @@ def save_assumptions_note(
 - Existing-station baseline source status: `{baseline_status}`.
 - EV projection source status: `{ev_status}`.
 - Grid capacity source status: `{grid_status}`.
+- Business-attractiveness proxy status: `{business_status}`.
 - Existing charging baseline uses the official NAP-DGT/MITERD XML spatially matched to RTIG corridors within a 5 km threshold.
 - EV demand uses the official datos.gob.es electrification exercise data and a SARIMA extension of the published notebook approach to estimate the 2027 EV stock proxy.
 - Grid matching uses the nearest available published distributor demand-capacity nodes in `data/external/`, classifying locations as `Sufficient`, `Moderate`, or `Congested` based on whether available capacity is above 2x demand, between 1x and 2x demand, or below demand.
+- Business attractiveness uses a conservative proxy based on nearby interurban charging-site metadata mentioning restaurants, cafes, hotels, fuel, parking, and retail uses, so competing candidate sites on the same corridor are nudged toward stronger service ecosystems.
 - Exact duplicate station coordinates on the same route are merged into a single site so the package better reflects the "fewest stations possible" objective.
 """
     (output_dir / "ASSUMPTIONS.md").write_text(note, encoding="utf-8")
@@ -773,6 +1102,7 @@ def main() -> None:
     baseline_status = "missing:existing_interurban_stations.csv"
     ev_status = "missing:ev_projection_2027.csv"
     grid_status = "missing:grid_capacity_files"
+    business_status = "missing:existing_interurban_stations_matched.csv"
     try:
         try_build_official_external_inputs(
             roads_gdf,
@@ -784,7 +1114,9 @@ def main() -> None:
 
     route_summary = summarize_routes(roads_gdf)
     baseline_by_route, baseline_existing_stations, baseline_status = load_external_route_baseline(external_dir)
+    business_context, business_status = load_business_context(external_dir)
     route_summary = enrich_route_summary_with_baseline(route_summary, baseline_by_route)
+    route_summary = enrich_route_summary_with_business(route_summary, business_context)
     route_summary = enrich_route_summary_for_planning(route_summary)
 
     file_2_initial = build_file_2(
@@ -794,6 +1126,7 @@ def main() -> None:
         min_route_span_km=float(datathon_cfg["min_route_span_km"]),
         charger_policy="balanced",
         grid_policy="balanced",
+        business_context=business_context,
     )
     grid_nodes = load_grid_capacity_bundle(external_dir)
     if not grid_nodes.empty:
@@ -825,12 +1158,13 @@ def main() -> None:
     file_1.to_csv(output_dir / "File 1.csv", index=False)
     file_2.to_csv(output_dir / "File 2.csv", index=False)
     file_3.to_csv(output_dir / "File 3.csv", index=False)
-    save_map(file_2, map_output, roads_gdf=roads_gdf)
+    save_map(file_2_enriched, map_output, roads_gdf=roads_gdf)
     save_assumptions_note(
         output_dir,
         baseline_status=baseline_status,
         ev_status=ev_status,
         grid_status=grid_status,
+        business_status=business_status,
         station_spacing_km=float(datathon_cfg["station_spacing_km"]),
     )
 

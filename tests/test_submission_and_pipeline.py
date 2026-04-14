@@ -7,7 +7,13 @@ from shapely.geometry import LineString, MultiLineString, Point
 
 import scripts.generate_submission_package as gsp
 import scripts.run_pipeline as run_pipeline
-from scripts.build_offline_scenario_explorer import build_scenarios, geometry_to_lines, render_html
+from scripts.build_offline_scenario_explorer import (
+    build_place_index,
+    build_scenarios,
+    build_segment_graph,
+    geometry_to_lines,
+    render_html,
+)
 from scripts.build_offline_reference_maps import (
     backdrop_features,
     base_styles,
@@ -107,20 +113,93 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     zero_span_row = pd.Series({"min_pk": 10.0, "max_pk": 10.0})
     assert gsp._target_positions_by_count(zero_span_row, 1) == [10.0]
 
-    file_2 = gsp.build_file_2(roads, planning_summary, spacing_km=100, min_route_span_km=50, charger_policy="balanced", grid_policy="balanced")
-    assert FILE_2_COLUMNS == file_2.columns.tolist()
+    business_context = pd.DataFrame(
+        [
+            {
+                "latitude": 41.02,
+                "longitude": -2.98,
+                "route_segment": "A-1",
+                "route_family": "1",
+                "business_score": 6.0,
+                "business_tags": "food, lodging",
+            }
+        ]
+    )
+    file_2 = gsp.build_file_2(
+        roads,
+        planning_summary,
+        spacing_km=100,
+        min_route_span_km=50,
+        charger_policy="balanced",
+        grid_policy="balanced",
+        business_context=business_context,
+    )
+    assert file_2.columns.tolist()[: len(FILE_2_COLUMNS)] == FILE_2_COLUMNS
     assert not file_2.empty
 
     duplicate_rows = pd.DataFrame(
         [
-            {"location_id": "X", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 4, "grid_status": "Moderate"},
-            {"location_id": "Y", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 6, "grid_status": "Congested"},
+            {"location_id": "X", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 4, "grid_status": "Moderate", "business_score": 1.5},
+            {"location_id": "Y", "latitude": 40.5, "longitude": -3.5, "route_segment": "A-1", "n_chargers_proposed": 6, "grid_status": "Congested", "business_score": 3.5},
         ]
     )
     deduped = gsp.deduplicate_station_rows(duplicate_rows)
     assert len(deduped) == 1
     assert deduped.loc[0, "n_chargers_proposed"] == 10
     assert deduped.loc[0, "grid_status"] == "Congested"
+    assert deduped.loc[0, "business_score"] == 3.5
+    assert gsp._extract_business_tags("Hotel restaurante Repsol parking")[1] > 0
+    assert gsp._route_family("N-340A") == "340"
+    assert gsp._route_family("AP-7N") == "7"
+    assert gsp._route_family("RING") == "RING"
+    assert gsp._haversine_pair_km(40.0, -3.0, 40.0, -3.0) == 0.0
+    assert gsp._business_signal_for_point(41.01, -2.99, "A-1", business_context) > 0
+    assert gsp._should_merge_nearby_sites(
+        pd.Series({"latitude": 40.0, "longitude": -3.0, "route_segment": "A-2"}),
+        pd.Series({"latitude": 40.01, "longitude": -3.01, "route_segment": "N-2A"}),
+        merge_distance_km=8.0,
+    )
+    assert not gsp._should_merge_nearby_sites(
+        pd.Series({"latitude": 40.0, "longitude": -3.0, "route_segment": "A-2"}),
+        pd.Series({"latitude": 40.03, "longitude": -3.03, "route_segment": "A-4"}),
+        merge_distance_km=8.0,
+    )
+    assert not gsp._should_merge_nearby_sites(
+        pd.Series({"latitude": 40.0, "longitude": -3.0, "route_segment": "A-2"}),
+        pd.Series({"latitude": 41.0, "longitude": -4.0, "route_segment": "N-340"}),
+        merge_distance_km=8.0,
+    )
+    near_rows = pd.DataFrame(
+        [
+            {"location_id": "A", "latitude": 40.0000, "longitude": -3.0000, "route_segment": "A-2", "n_chargers_proposed": 8, "grid_status": "Moderate", "business_score": 1.0},
+            {"location_id": "B", "latitude": 40.0100, "longitude": -3.0100, "route_segment": "N-2A", "n_chargers_proposed": 4, "grid_status": "Congested", "business_score": 3.0},
+            {"location_id": "C", "latitude": 42.0000, "longitude": 1.0000, "route_segment": "A-7", "n_chargers_proposed": 6, "grid_status": "Sufficient", "business_score": 0.5},
+        ]
+    )
+    merged_near = gsp.merge_nearby_station_rows(near_rows, merge_distance_km=8.0)
+    assert len(merged_near) == 2
+    assert sorted(merged_near["n_chargers_proposed"].tolist()) == [6, 12]
+    assert "Congested" in set(merged_near["grid_status"])
+    assert merged_near["business_score"].max() == 3.0
+    chained_rows = pd.DataFrame(
+        [
+            {"location_id": "A", "latitude": 40.0000, "longitude": -3.0000, "route_segment": "A-2", "n_chargers_proposed": 4, "grid_status": "Moderate", "business_score": 0.0},
+            {"location_id": "B", "latitude": 40.0050, "longitude": -3.0050, "route_segment": "N-2A", "n_chargers_proposed": 4, "grid_status": "Moderate", "business_score": 1.0},
+            {"location_id": "C", "latitude": 40.0060, "longitude": -3.0060, "route_segment": "N-2", "n_chargers_proposed": 4, "grid_status": "Sufficient", "business_score": 2.0},
+        ]
+    )
+    merged_chain = gsp.merge_nearby_station_rows(chained_rows, merge_distance_km=8.0)
+    assert len(merged_chain) == 1
+    assert merged_chain.loc[0, "n_chargers_proposed"] == 12
+    consumed_skip_rows = pd.DataFrame(
+        [
+            {"location_id": "A", "latitude": 40.0000, "longitude": -3.0000, "route_segment": "A-2", "n_chargers_proposed": 4, "grid_status": "Moderate"},
+            {"location_id": "B", "latitude": 41.0000, "longitude": -4.0000, "route_segment": "A-6", "n_chargers_proposed": 4, "grid_status": "Sufficient"},
+            {"location_id": "C", "latitude": 40.0100, "longitude": -3.0100, "route_segment": "N-2A", "n_chargers_proposed": 4, "grid_status": "Congested"},
+        ]
+    )
+    merged_consumed_skip = gsp.merge_nearby_station_rows(consumed_skip_rows, merge_distance_km=8.0)
+    assert len(merged_consumed_skip) == 2
 
     skipped_summary = planning_summary.copy()
     skipped_summary.loc[:, "min_pk"] = 0.0
@@ -147,7 +226,7 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     assert gsp._geometry_to_lines(None) == []
     assert gsp._map_bounds(pd.DataFrame(columns=FILE_2_COLUMNS), [])["minLon"] == -9.5
 
-    gsp.save_assumptions_note(tmp_path, "loaded:x.csv", "missing:y.csv", "loaded:grid.csv", 120)
+    gsp.save_assumptions_note(tmp_path, "loaded:x.csv", "missing:y.csv", "loaded:grid.csv", "loaded:business.csv", 120)
     assert "120" in (tmp_path / "ASSUMPTIONS.md").read_text(encoding="utf-8")
 
     root = tmp_path / "repo"
@@ -176,6 +255,20 @@ datasets: {}
     pd.DataFrame([{"total_ev_projected_2027": 654321}]).to_csv(
         root / "data" / "external" / "ev_projection_2027.csv", index=False
     )
+    pd.DataFrame(
+        [
+            {
+                "site_name": "Hotel Restaurante Norte",
+                "address_text": "Area de servicio",
+                "operator_name": "Repsol",
+                "latitude": 41.05,
+                "longitude": -2.95,
+                "carretera": "A-1",
+                "is_interurban_match": True,
+                "distance_to_route_km": 1.2,
+            }
+        ]
+    ).to_csv(root / "data" / "external" / "existing_interurban_stations_matched.csv", index=False)
     pd.DataFrame([{"wrong_column": 1}]).to_csv(root / "data" / "external" / "invalid.csv", index=False)
     assert gsp.load_optional_scalar(root / "data" / "external" / "invalid.csv", "missing", 3) == (3, "invalid:invalid.csv")
     assert gsp.load_optional_scalar(root / "data" / "external" / "missing.csv", "missing", 4) == (4, "missing:missing.csv")
@@ -200,7 +293,7 @@ def test_generate_submission_branch_helpers():
             {"carretera": "AP-7N", "total_length_km": 110.0, "pk_span_km": 110.0, "mean_complexity": 1.5, "tent_share": 0.0, "existing_station_count": 1, "coverage_gap_score": 9.0},
             {"carretera": "A-66R", "total_length_km": 120.0, "pk_span_km": 120.0, "mean_complexity": 2.0, "tent_share": 0.0, "existing_station_count": 2, "coverage_gap_score": 8.0},
             {"carretera": "N-340A", "total_length_km": 130.0, "pk_span_km": 130.0, "mean_complexity": 2.5, "tent_share": 0.0, "existing_station_count": 3, "coverage_gap_score": 7.0},
-            {"carretera": "XX-1", "total_length_km": 140.0, "pk_span_km": 140.0, "mean_complexity": 3.0, "tent_share": 0.0, "existing_station_count": 4, "coverage_gap_score": 6.0},
+            {"carretera": "XX-1", "total_length_km": 140.0, "pk_span_km": 140.0, "mean_complexity": 3.0, "tent_share": 0.0, "existing_station_count": 4, "coverage_gap_score": 6.0, "business_support_score": 2.0},
         ]
     )
     enriched = gsp.enrich_route_summary_for_planning(route_summary)
@@ -210,6 +303,9 @@ def test_generate_submission_branch_helpers():
     assert hierarchy["A-66R"] == 0.76
     assert hierarchy["N-340A"] == 0.66
     assert hierarchy["XX-1"] == 0.60
+    assert enriched["business_norm"].between(0.0, 1.0).all()
+    empty_business = gsp.enrich_route_summary_with_business(route_summary, pd.DataFrame())
+    assert "business_support_score" in empty_business.columns
 
     low_need_row = pd.Series(
         {
@@ -249,6 +345,95 @@ def test_generate_submission_branch_helpers():
     )
     lines = gsp._geometry_to_lines(roads)
     assert len(lines) == 2
+
+    moderate_summary = pd.DataFrame(
+        [
+            {
+                "carretera": "A-4",
+                "min_pk": 0.0,
+                "max_pk": 180.0,
+                "pk_span_km": 180.0,
+                "total_length_km": 180.0,
+                "tent_share": 0.1,
+                "service_need_score": 0.5,
+                "existing_station_count": 0.0,
+                "route_hierarchy_score": 0.9,
+                "business_support_score": 0.0,
+            }
+        ]
+    )
+    roads_moderate = gpd.GeoDataFrame(
+        {
+            "carretera": ["A-4"],
+            "pk_inicio": [0.0],
+            "pk_fin": [180.0],
+            "geometry": [LineString([(-4.0, 39.5), (-2.0, 38.5)])],
+        },
+        crs="EPSG:4326",
+    )
+    moderate_file_2 = gsp.build_file_2(roads_moderate, moderate_summary, spacing_km=120, min_route_span_km=50)
+    assert "Moderate" in set(moderate_file_2["grid_status"])
+
+
+def test_business_context_edge_cases(tmp_path):
+    missing_context, missing_status = gsp.load_business_context(tmp_path)
+    assert missing_context.empty
+    assert missing_status == "missing:existing_interurban_stations_matched.csv"
+
+    matched_path = tmp_path / "existing_interurban_stations_matched.csv"
+    pd.DataFrame(columns=["site_name", "latitude", "longitude"]).to_csv(matched_path, index=False)
+    empty_context, empty_status = gsp.load_business_context(tmp_path)
+    assert empty_context.empty
+    assert empty_status == "empty:existing_interurban_stations_matched.csv"
+
+    pd.DataFrame(
+        [
+            {
+                "site_name": "Neutral stop",
+                "address_text": "",
+                "operator_name": "",
+                "latitude": 40.0,
+                "longitude": -3.0,
+                "is_interurban_match": True,
+                "distance_to_route_km": 2.0,
+            }
+        ]
+    ).to_csv(matched_path, index=False)
+    neutral_context, neutral_status = gsp.load_business_context(tmp_path)
+    assert neutral_context.empty
+    assert neutral_status == "no_business_matches:existing_interurban_stations_matched.csv"
+
+    pd.DataFrame(
+        [
+            {
+                "site_name": "Hotel parking",
+                "address_text": "service area",
+                "operator_name": "BP",
+                "latitude": 40.0,
+                "longitude": -3.0,
+            }
+        ]
+    ).to_csv(matched_path, index=False)
+    no_route_context, loaded_status = gsp.load_business_context(tmp_path)
+    assert loaded_status == "loaded:existing_interurban_stations_matched.csv"
+    assert no_route_context.loc[0, "route_segment"] == ""
+    assert gsp._business_signal_for_point(40.0, -3.0, "A-9", None) == 0.0
+
+    deduped = gsp.deduplicate_station_rows(
+        pd.DataFrame(
+            [
+                {
+                    "location_id": "IBE_001",
+                    "latitude": 40.0,
+                    "longitude": -3.0,
+                    "route_segment": "A-2",
+                    "n_chargers_proposed": 4,
+                    "grid_status": "Sufficient",
+                }
+            ]
+        )
+    )
+    assert deduped.loc[0, "business_score"] == 0.0
 
 
 def test_offline_reference_map_helpers_and_main(tmp_path, monkeypatch):
@@ -592,9 +777,30 @@ datasets: {}
 
     scenarios = build_scenarios(roads, gsp.summarize_routes(roads), {"charger_power_kw": 150, "min_route_span_km": 50, "baseline_existing_stations_default": 0, "total_ev_projected_2027_default": 100})
     assert len(scenarios) == 27
-    html = render_html(lines, scenarios, {"minLon": -4, "minLat": 40, "maxLon": 3, "maxLat": 43})
+    route_graph = build_segment_graph(roads)
+    assert route_graph["segments"]
+    matched_path = root / "data" / "external" / "existing_interurban_stations_matched.csv"
+    pd.DataFrame(
+        [
+            {
+                "latitude": 40.6,
+                "longitude": -3.4,
+                "address_text": "Municipio: Madrid | Provincia: Madrid",
+            },
+            {
+                "latitude": 41.4,
+                "longitude": 2.1,
+                "address_text": "Municipio: Barcelona | Provincia: Barcelona",
+            },
+        ]
+    ).to_csv(matched_path, index=False)
+    places = build_place_index(root / "data" / "external", roads)
+    assert places
+    html = render_html(lines, scenarios, {"minLon": -4, "minLat": 40, "maxLon": 3, "maxLat": 43}, route_graph, places)
     assert "Offline Scenario Explorer" in html
     assert "Download File 2" in html
+    assert "Find best route" in html
+    assert "originInput" in html
 
     monkeypatch.setattr(boe, "ROOT", root)
     monkeypatch.setattr(boe, "OUTPUT_PATH", root / "maps" / "offline_scenario_explorer.html")
@@ -668,6 +874,20 @@ datasets: {}
     pd.DataFrame([{"total_ev_projected_2027": 777777}]).to_csv(
         root / "data" / "external" / "ev_projection_2027.csv", index=False
     )
+    pd.DataFrame(
+        [
+            {
+                "site_name": "Centro comercial y hotel",
+                "address_text": "parking",
+                "operator_name": "CEPSA",
+                "latitude": 40.7,
+                "longitude": -3.2,
+                "carretera": "A-1",
+                "is_interurban_match": True,
+                "distance_to_route_km": 2.0,
+            }
+        ]
+    ).to_csv(root / "data" / "external" / "existing_interurban_stations_matched.csv", index=False)
 
     monkeypatch.setattr(gsp, "ROOT", root)
     monkeypatch.setattr(gsp, "DEFAULT_INPUT", root / "data" / "processed" / "roads_processed_gdf.parquet")
@@ -704,6 +924,11 @@ datasets: {}
     pd.DataFrame([{"wrong": 1}]).to_csv(invalid_external / "existing_interurban_stations.csv", index=False)
     invalid_baseline = gsp.load_external_route_baseline(invalid_external)
     assert invalid_baseline[1] == 0
+    business_context, business_status = gsp.load_business_context(root / "data" / "external")
+    assert business_status.startswith("loaded:")
+    assert not business_context.empty
+    route_with_business = gsp.enrich_route_summary_with_business(gsp.summarize_routes(roads), business_context)
+    assert "business_support_score" in route_with_business.columns
 
 
 def test_offline_explorer_additional_branches(tmp_path, monkeypatch):
@@ -766,12 +991,81 @@ def test_offline_explorer_additional_branches(tmp_path, monkeypatch):
     )
     assert scenarios_with_invalid_scalars
 
+    empty_places = boe.build_place_index(root / "data" / "missing", roads)
+    assert empty_places == []
+
     monkeypatch.setattr(boe, "OUTPUT_PATH", root / "maps" / "offline_scenario_explorer.html")
     monkeypatch.setattr(boe, "DEFAULT_INPUT", root / "data" / "processed" / "roads_processed_gdf.parquet")
     monkeypatch.setattr(boe, "load_roads_dataset", lambda _: roads)
     monkeypatch.setattr(boe, "load_config", lambda: {"datathon": {"charger_power_kw": 150, "min_route_span_km": 50, "baseline_existing_stations_default": 0, "total_ev_projected_2027_default": 100}})
     boe.main()
     assert (root / "maps" / "offline_scenario_explorer.html").exists()
+
+
+def test_offline_explorer_place_and_graph_helpers(tmp_path):
+    roads = sample_roads_gdf()
+    import scripts.build_offline_scenario_explorer as boe
+
+    assert boe._normalize_text("Ávila Norte") == "avila norte"
+    assert boe._haversine_km(40.0, -3.0, 40.0, -3.0) == 0.0
+    assert boe._segment_parts(None) == []
+    assert boe._segment_parts(Point(0, 0)) == []
+    multi_parts = boe._segment_parts(MultiLineString([[(0, 0), (1, 1)], [(1, 1), (2, 2)]]))
+    assert len(multi_parts) == 2
+
+    graph = build_segment_graph(roads)
+    assert len(graph["segments"]) == len(roads)
+    assert all(isinstance(neighbors, list) for neighbors in graph["adjacency"].values())
+
+    roads_with_empty = roads.copy()
+    roads_with_empty.loc[0, "geometry"] = None
+    graph_with_empty = boe.build_segment_graph(roads_with_empty)
+    assert graph_with_empty["adjacency"]["0"] == []
+
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    pd.DataFrame(columns=["latitude", "longitude", "address_text"]).to_csv(
+        external_dir / "existing_interurban_stations_matched.csv", index=False
+    )
+    assert build_place_index(external_dir, roads) == []
+    pd.DataFrame(
+        [
+            {
+                "latitude": 40.45,
+                "longitude": -3.7,
+                "address_text": "Municipio: Madrid | Provincia: Madrid",
+            },
+            {
+                "latitude": 40.46,
+                "longitude": -3.71,
+                "address_text": "Municipio: Madrid | Provincia: Madrid",
+            },
+            {
+                "latitude": 41.38,
+                "longitude": 2.17,
+                "address_text": "Municipio: Barcelona | Provincia: Barcelona",
+            },
+            {
+                "latitude": 41.0,
+                "longitude": 1.0,
+                "address_text": "Dirección sin municipio",
+            },
+        ]
+    ).to_csv(external_dir / "existing_interurban_stations_matched.csv", index=False)
+    places = build_place_index(external_dir, roads)
+    assert len(places) == 2
+    assert all(place["nearest_segment_id"] >= 0 for place in places)
+
+    pd.DataFrame(
+        [
+            {
+                "latitude": 41.0,
+                "longitude": 1.0,
+                "address_text": "Dirección sin municipio",
+            }
+        ]
+    ).to_csv(external_dir / "existing_interurban_stations_matched.csv", index=False)
+    assert build_place_index(external_dir, roads) == []
 
 
 def test_scrub_notebook_paths_script(tmp_path, monkeypatch):

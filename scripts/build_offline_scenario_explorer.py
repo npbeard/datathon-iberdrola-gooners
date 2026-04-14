@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Dict, List
 
@@ -19,7 +22,9 @@ from scripts.generate_submission_package import (
     build_file_2,
     build_file_3,
     enrich_route_summary_for_planning,
+    enrich_route_summary_with_business,
     filter_interurban_routes,
+    load_business_context,
     load_config,
     load_roads_dataset,
     summarize_routes,
@@ -30,6 +35,9 @@ from src.data.external_sources import (
     load_grid_capacity_bundle,
 )
 OUTPUT_PATH = ROOT / "maps" / "offline_scenario_explorer.html"
+
+MUNICIPALITY_PATTERN = re.compile(r"Municipio: ([^|]+)")
+PROVINCE_PATTERN = re.compile(r"Provincia: ([^|]+)")
 
 
 def geometry_to_lines(roads_gdf: gpd.GeoDataFrame) -> List[List[List[float]]]:
@@ -50,6 +58,152 @@ def geometry_to_lines(roads_gdf: gpd.GeoDataFrame) -> List[List[List[float]]]:
                 lines.append(coords)
 
     return lines
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or ""))
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    return re.sub(r"\s+", " ", normalized).strip().lower()
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius_km = 6371.0
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
+    return 2 * radius_km * math.asin(math.sqrt(a))
+
+
+def _segment_parts(geom) -> List[List[List[float]]]:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "LineString":
+        return [[[round(x, 4), round(y, 4)] for x, y in geom.coords]]
+    if geom.geom_type == "MultiLineString":
+        return [
+            [[round(x, 4), round(y, 4)] for x, y in part.coords]
+            for part in geom.geoms
+            if part is not None and not part.is_empty
+        ]
+    return []
+
+
+def build_segment_graph(roads_gdf: gpd.GeoDataFrame) -> Dict[str, object]:
+    roads = roads_gdf.reset_index(drop=True).copy()
+    metric = roads.to_crs("EPSG:3857")
+    tolerance_m = 1500.0
+
+    segments: List[Dict[str, object]] = []
+    adjacency: Dict[str, List[int]] = {}
+    for idx, row in roads.iterrows():
+        centroid = row.geometry.centroid if row.geometry is not None else None
+        segment = {
+            "id": int(idx),
+            "route_segment": str(row["carretera"]),
+            "length_km": round(float(row.get("length_km", 0.0)), 3),
+            "centroid_lat": round(float(centroid.y), 6) if centroid else 0.0,
+            "centroid_lon": round(float(centroid.x), 6) if centroid else 0.0,
+            "parts": _segment_parts(row.geometry),
+        }
+        segments.append(segment)
+        adjacency[str(idx)] = []
+
+    sindex = metric.sindex
+    for idx, geom in enumerate(metric.geometry):
+        if geom is None or geom.is_empty:
+            continue
+        nearby = sindex.query(geom.buffer(tolerance_m), predicate="intersects")
+        for neighbor_idx in nearby:
+            neighbor_idx = int(neighbor_idx)
+            if neighbor_idx <= idx:
+                continue
+            other = metric.geometry.iloc[neighbor_idx]
+            if geom.distance(other) <= tolerance_m or geom.intersects(other):
+                adjacency[str(idx)].append(neighbor_idx)
+                adjacency[str(neighbor_idx)].append(idx)
+
+    return {"segments": segments, "adjacency": adjacency}
+
+
+def build_place_index(external_dir: Path, roads_gdf: gpd.GeoDataFrame) -> List[Dict[str, object]]:
+    matched_path = external_dir / "existing_interurban_stations_matched.csv"
+    if not matched_path.exists():
+        return []
+
+    stations = pd.read_csv(matched_path, usecols=["latitude", "longitude", "address_text"])
+    stations = stations.dropna(subset=["latitude", "longitude"]).copy()
+    if stations.empty:
+        return []
+
+    rows: List[Dict[str, object]] = []
+    for station in stations.itertuples(index=False):
+        address_text = str(getattr(station, "address_text", "") or "")
+        municipality_match = MUNICIPALITY_PATTERN.search(address_text)
+        if not municipality_match:
+            continue
+        province_match = PROVINCE_PATTERN.search(address_text)
+        municipality = municipality_match.group(1).strip()
+        province = province_match.group(1).strip() if province_match else ""
+        display_name = municipality if not province else f"{municipality} ({province})"
+        rows.append(
+            {
+                "municipality": municipality,
+                "province": province,
+                "display_name": display_name,
+                "normalized_name": _normalize_text(municipality),
+                "normalized_display": _normalize_text(display_name),
+                "latitude": float(station.latitude),
+                "longitude": float(station.longitude),
+            }
+        )
+
+    if not rows:
+        return []
+
+    places = pd.DataFrame(rows)
+    places = (
+        places.groupby(["municipality", "province", "display_name", "normalized_name", "normalized_display"], as_index=False)
+        .agg(latitude=("latitude", "median"), longitude=("longitude", "median"), anchor_count=("latitude", "size"))
+        .sort_values(["anchor_count", "display_name"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    roads_metric = roads_gdf.to_crs("EPSG:3857")
+    place_points = gpd.GeoDataFrame(
+        places,
+        geometry=gpd.points_from_xy(places["longitude"], places["latitude"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3857")
+    nearest = gpd.sjoin_nearest(
+        place_points,
+        roads_metric[["carretera", "geometry"]].reset_index(names="segment_id"),
+        how="left",
+        distance_col="distance_to_segment_m",
+    )
+    nearest["nearest_segment_id"] = nearest["segment_id"].fillna(-1).astype(int)
+    nearest["distance_to_segment_km"] = (nearest["distance_to_segment_m"] / 1000.0).round(2)
+
+    return (
+        nearest[
+            [
+                "display_name",
+                "municipality",
+                "province",
+                "normalized_name",
+                "normalized_display",
+                "latitude",
+                "longitude",
+                "anchor_count",
+                "nearest_segment_id",
+                "distance_to_segment_km",
+            ]
+        ]
+        .to_dict(orient="records")
+    )
 
 
 def build_scenarios(
@@ -77,6 +231,8 @@ def build_scenarios(
         if not ev_df.empty and "total_ev_projected_2027" in ev_df.columns:
             total_ev_projected_2027 = int(ev_df["total_ev_projected_2027"].iloc[0])
     grid_nodes = load_grid_capacity_bundle(external_dir)
+    business_context, _ = load_business_context(external_dir)
+    route_summary = enrich_route_summary_with_business(route_summary, business_context)
     route_summary = enrich_route_summary_for_planning(route_summary)
 
     for spacing in spacing_options:
@@ -90,6 +246,7 @@ def build_scenarios(
                     min_route_span_km=float(datathon_cfg["min_route_span_km"]),
                     charger_policy=charger_policy,
                     grid_policy=grid_policy,
+                    business_context=business_context,
                 )
                 file_2_enriched = enrich_stations_with_grid(
                     file_2_raw,
@@ -111,10 +268,18 @@ def build_scenarios(
     return scenarios
 
 
-def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], bounds: Dict[str, float]) -> str:
+def render_html(
+    lines: List[List[List[float]]],
+    scenarios: Dict[str, Dict],
+    bounds: Dict[str, float],
+    route_graph: Dict[str, object],
+    places: List[Dict[str, object]],
+) -> str:
     lines_json = json.dumps(lines, ensure_ascii=False)
     scenarios_json = json.dumps(scenarios, ensure_ascii=False)
     bounds_json = json.dumps(bounds, ensure_ascii=False)
+    route_graph_json = json.dumps(route_graph, ensure_ascii=False)
+    places_json = json.dumps(places, ensure_ascii=False)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -171,6 +336,13 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-top: 16px;
+    }}
+    .route-controls {{
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 12px;
+      margin-top: 16px;
+      align-items: end;
     }}
     label {{
       display: block;
@@ -256,13 +428,34 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
       gap: 10px;
       margin-top: 16px;
     }}
+    .planner-metrics {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }}
+    .planner-metric {{
+      background: rgba(15,118,110,0.06);
+      border-radius: 14px;
+      padding: 12px;
+    }}
+    .planner-metric .label {{
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }}
+    .planner-metric .value {{
+      margin-top: 6px;
+      font-size: 22px;
+    }}
     .note {{
       margin-top: 14px;
       font-size: 13px;
       color: var(--muted);
     }}
     @media (max-width: 1000px) {{
-      .hero, .main, .kpis, .controls, .actions {{
+      .hero, .main, .kpis, .controls, .actions, .route-controls, .planner-metrics {{
         grid-template-columns: 1fr;
       }}
     }}
@@ -310,12 +503,32 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
       <div class="card">
         <h2>Why this matters</h2>
         <p>The point is not to show a huge web platform. The point is to let the jury test a few planning assumptions and immediately see how the network changes. This keeps the artifact simple and still gives Iberdrola something interactive.</p>
+        <div class="route-controls">
+          <div>
+            <label for="originInput">Origin city or town</label>
+            <input id="originInput" list="placeOptions" placeholder="e.g. Madrid" />
+          </div>
+          <div>
+            <label for="destinationInput">Destination city or town</label>
+            <input id="destinationInput" list="placeOptions" placeholder="e.g. Valencia" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <button id="planRoute">Find best route</button>
+          </div>
+        </div>
+        <datalist id="placeOptions"></datalist>
+        <div class="planner-metrics">
+          <div class="planner-metric"><div class="label">Chosen route</div><div class="value" id="routeDistance">-</div></div>
+          <div class="planner-metric"><div class="label">Charging support</div><div class="value" id="routeSupport">-</div></div>
+          <div class="planner-metric"><div class="label">Suggested stops</div><div class="value" id="routeStops">-</div></div>
+        </div>
         <div class="actions">
           <button id="downloadFile1">Download File 1</button>
           <button id="downloadFile2">Download File 2</button>
           <button id="downloadFile3">Download File 3</button>
         </div>
-        <p class="note">The current grid-status logic is still based on the provisional assumptions already declared in the repository. This explorer is intended as a decision-support prototype, not as a replacement for real node-level grid matching.</p>
+        <p class="note" id="routeMessage">Type two places and the explorer will choose the corridor path with the best effective travel cost, balancing road distance with nearby charging support from the current scenario.</p>
       </div>
     </div>
 
@@ -350,7 +563,11 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
     const bounds = {bounds_json};
     const roadLines = {lines_json};
     const scenarios = {scenarios_json};
+    const routeGraph = {route_graph_json};
+    const places = {places_json};
     const svg = document.getElementById('map');
+    const placeOptions = document.getElementById('placeOptions');
+    placeOptions.innerHTML = places.slice(0, 2200).map(place => `<option value="${{place.display_name}}"></option>`).join('');
 
     function currentKey() {{
       return `${{document.getElementById('spacing').value}}|${{document.getElementById('chargerPolicy').value}}|${{document.getElementById('gridPolicy').value}}`;
@@ -383,6 +600,194 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
       if (status === 'Moderate') return '#e0a100';
       if (status === 'Congested') return '#c2410c';
       return '#2e8b57';
+    }}
+
+    function normalizeText(value) {{
+      return (value || '')
+        .normalize('NFD')
+        .replace(/[\\u0300-\\u036f]/g, '')
+        .replace(/\\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+    }}
+
+    function haversineKm(lat1, lon1, lat2, lon2) {{
+      const radius = 6371.0;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+      return 2 * radius * Math.asin(Math.sqrt(a));
+    }}
+
+    function routeFamily(routeSegment) {{
+      const match = String(routeSegment || '').match(/\\d+/g);
+      return match ? match.join('') : String(routeSegment || '');
+    }}
+
+    function resolvePlace(query) {{
+      const normalized = normalizeText(query);
+      if (!normalized) return null;
+      let exact = places.find(place => place.normalized_display === normalized || place.normalized_name === normalized);
+      if (exact) return exact;
+      let substring = places.find(place => place.normalized_display.includes(normalized) || normalized.includes(place.normalized_name));
+      if (substring) return substring;
+      let best = null;
+      let bestScore = -1;
+      for (const place of places) {{
+        const score = longestCommonPrefix(normalized, place.normalized_display);
+        if (score > bestScore) {{
+          bestScore = score;
+          best = place;
+        }}
+      }}
+      return bestScore >= 3 ? best : null;
+    }}
+
+    function longestCommonPrefix(left, right) {{
+      const limit = Math.min(left.length, right.length);
+      let count = 0;
+      while (count < limit && left[count] === right[count]) count += 1;
+      return count;
+    }}
+
+    const segmentById = Object.fromEntries(routeGraph.segments.map(segment => [segment.id, segment]));
+    const scenarioSupportCache = {{}};
+
+    function segmentSupportMap(scenario) {{
+      const cacheKey = currentKey();
+      if (scenarioSupportCache[cacheKey]) return scenarioSupportCache[cacheKey];
+
+      const support = {{}};
+      for (const segment of routeGraph.segments) {{
+        let best = 0;
+        for (const station of scenario.file2) {{
+          const distance = haversineKm(segment.centroid_lat, segment.centroid_lon, station.latitude, station.longitude);
+          if (distance > 35) continue;
+          const routeBoost = routeFamily(segment.route_segment) === routeFamily(station.route_segment) ? 1.15 : 1.0;
+          const gridWeight = station.grid_status === 'Sufficient' ? 1.0 : station.grid_status === 'Moderate' ? 0.78 : 0.55;
+          const chargerWeight = Math.min(1.6, 0.7 + Number(station.n_chargers_proposed || 0) / 8);
+          const proximityWeight = distance <= 12 ? 1.0 : distance <= 20 ? 0.7 : 0.45;
+          best = Math.max(best, routeBoost * gridWeight * chargerWeight * proximityWeight);
+        }}
+        support[segment.id] = Number(best.toFixed(3));
+      }}
+      scenarioSupportCache[cacheKey] = support;
+      return support;
+    }}
+
+    function segmentCost(segment, supportValue) {{
+      let factor = 1.08;
+      if (supportValue >= 1.1) factor = 0.83;
+      else if (supportValue >= 0.85) factor = 0.89;
+      else if (supportValue >= 0.6) factor = 0.96;
+      if (segment.length_km >= 45 && supportValue < 0.6) factor += 0.10;
+      return segment.length_km * factor;
+    }}
+
+    function shortestPath(startId, endId, supportMap) {{
+      const distances = {{}};
+      const previous = {{}};
+      const visited = new Set();
+      for (const segment of routeGraph.segments) distances[segment.id] = Infinity;
+      distances[startId] = 0;
+
+      while (true) {{
+        let current = null;
+        let bestDistance = Infinity;
+        for (const segment of routeGraph.segments) {{
+          if (!visited.has(segment.id) && distances[segment.id] < bestDistance) {{
+            bestDistance = distances[segment.id];
+            current = segment.id;
+          }}
+        }}
+        if (current === null || current === endId) break;
+        visited.add(current);
+        for (const neighbor of routeGraph.adjacency[String(current)] || []) {{
+          if (visited.has(neighbor)) continue;
+          const neighborSegment = segmentById[neighbor];
+          const alt = distances[current] + segmentCost(neighborSegment, supportMap[neighbor] || 0);
+          if (alt < distances[neighbor]) {{
+            distances[neighbor] = alt;
+            previous[neighbor] = current;
+          }}
+        }}
+      }}
+
+      if (!Number.isFinite(distances[endId])) return null;
+      const path = [];
+      let cursor = endId;
+      while (cursor !== undefined) {{
+        path.push(cursor);
+        cursor = previous[cursor];
+      }}
+      path.reverse();
+      return path;
+    }}
+
+    function suggestStops(pathIds, scenario) {{
+      const touched = pathIds.map(id => segmentById[id]);
+      const stations = scenario.file2.filter(station => {{
+        return touched.some(segment => haversineKm(segment.centroid_lat, segment.centroid_lon, station.latitude, station.longitude) <= 22);
+      }});
+      const seen = new Set();
+      return stations
+        .sort((a, b) => Number(b.n_chargers_proposed) - Number(a.n_chargers_proposed))
+        .filter(station => {{
+          if (seen.has(station.location_id)) return false;
+          seen.add(station.location_id);
+          return true;
+        }})
+        .slice(0, 6);
+    }}
+
+    function drawRouteOverlay(pathIds, originPlace, destinationPlace, scenario) {{
+      const fragments = [];
+      for (const id of pathIds) {{
+        const segment = segmentById[id];
+        for (const part of segment.parts) {{
+          const path = part.map((coord, idx) => {{
+            const [x, y] = project(coord[0], coord[1]);
+            return `${{idx === 0 ? 'M' : 'L'}}${{x.toFixed(1)}},${{y.toFixed(1)}}`;
+          }}).join(' ');
+          fragments.push(`<path d="${{path}}" fill="none" stroke="#0f766e" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"></path>`);
+        }}
+      }}
+      const routeStops = suggestStops(pathIds, scenario);
+      for (const stop of routeStops) {{
+        const [x, y] = project(stop.longitude, stop.latitude);
+        fragments.push(`<circle cx="${{x.toFixed(1)}}" cy="${{y.toFixed(1)}}" r="6.6" fill="${{statusColor(stop.grid_status)}}" stroke="white" stroke-width="2"></circle>`);
+      }}
+      const [ox, oy] = project(originPlace.longitude, originPlace.latitude);
+      const [dx, dy] = project(destinationPlace.longitude, destinationPlace.latitude);
+      fragments.push(`<circle cx="${{ox.toFixed(1)}}" cy="${{oy.toFixed(1)}}" r="7" fill="#1d4ed8" stroke="white" stroke-width="2"></circle>`);
+      fragments.push(`<circle cx="${{dx.toFixed(1)}}" cy="${{dy.toFixed(1)}}" r="7" fill="#7c3aed" stroke="white" stroke-width="2"></circle>`);
+      svg.innerHTML += fragments.join('');
+      return routeStops;
+    }}
+
+    function planRoute() {{
+      const origin = resolvePlace(document.getElementById('originInput').value);
+      const destination = resolvePlace(document.getElementById('destinationInput').value);
+      if (!origin || !destination || origin.nearest_segment_id < 0 || destination.nearest_segment_id < 0) {{
+        document.getElementById('routeMessage').textContent = 'Please choose two known municipalities from the suggestions. The planner uses a local municipality index built from the interurban baseline.';
+        return;
+      }}
+      const scenario = scenarios[currentKey()];
+      const supportMap = segmentSupportMap(scenario);
+      const pathIds = shortestPath(origin.nearest_segment_id, destination.nearest_segment_id, supportMap);
+      if (!pathIds || !pathIds.length) {{
+        document.getElementById('routeMessage').textContent = `No corridor path was found between ${{origin.display_name}} and ${{destination.display_name}} in the local RTIG graph.`;
+        return;
+      }}
+      renderScenario();
+      const routeStops = drawRouteOverlay(pathIds, origin, destination, scenario);
+      const totalDistance = pathIds.reduce((sum, id) => sum + Number(segmentById[id].length_km || 0), 0);
+      const avgSupport = pathIds.reduce((sum, id) => sum + Number(supportMap[id] || 0), 0) / pathIds.length;
+      document.getElementById('routeDistance').textContent = `${{Math.round(totalDistance)}} km`;
+      document.getElementById('routeSupport').textContent = avgSupport >= 1.0 ? 'High' : avgSupport >= 0.7 ? 'Medium' : 'Low';
+      document.getElementById('routeStops').textContent = routeStops.length.toString();
+      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using effective travel cost: road distance adjusted by nearby charging support in the current scenario.`;
     }}
 
     function renderScenario() {{
@@ -439,8 +844,11 @@ def render_html(lines: List[List[List[float]]], scenarios: Dict[str, Dict], boun
     }});
 
     for (const id of ['spacing', 'chargerPolicy', 'gridPolicy']) {{
-      document.getElementById(id).addEventListener('change', renderScenario);
+      document.getElementById(id).addEventListener('change', () => {{
+        renderScenario();
+      }});
     }}
+    document.getElementById('planRoute').addEventListener('click', planRoute);
 
     renderScenario();
   </script>
@@ -462,6 +870,8 @@ def main() -> None:
 
     lines = geometry_to_lines(roads_gdf)
     scenarios = build_scenarios(roads_gdf, route_summary, datathon_cfg)
+    route_graph = build_segment_graph(roads_gdf)
+    places = build_place_index(ROOT / "data" / "external", roads_gdf)
     min_lon, min_lat, max_lon, max_lat = roads_gdf.total_bounds
     bounds = {
         "minLon": float(min_lon),
@@ -471,7 +881,7 @@ def main() -> None:
     }
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(render_html(lines, scenarios, bounds), encoding="utf-8")
+    OUTPUT_PATH.write_text(render_html(lines, scenarios, bounds, route_graph, places), encoding="utf-8")
     print(f"Saved: {OUTPUT_PATH}")
 
 
