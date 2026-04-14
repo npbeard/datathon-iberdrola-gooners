@@ -796,11 +796,13 @@ datasets: {}
     ).to_csv(matched_path, index=False)
     places = build_place_index(root / "data" / "external", roads)
     assert places
+    assert "snapped_latitude" in places[0]
     html = render_html(lines, scenarios, {"minLon": -4, "minLat": 40, "maxLon": 3, "maxLat": 43}, route_graph, places)
     assert "Offline Scenario Explorer" in html
     assert "Download File 2" in html
     assert "Find best route" in html
     assert "originInput" in html
+    assert "Dashed access legs" in html
 
     monkeypatch.setattr(boe, "ROOT", root)
     monkeypatch.setattr(boe, "OUTPUT_PATH", root / "maps" / "offline_scenario_explorer.html")
@@ -1055,6 +1057,7 @@ def test_offline_explorer_place_and_graph_helpers(tmp_path):
     places = build_place_index(external_dir, roads)
     assert len(places) == 2
     assert all(place["nearest_segment_id"] >= 0 for place in places)
+    assert all("snapped_latitude" in place and "snapped_longitude" in place for place in places)
 
     pd.DataFrame(
         [
@@ -1066,6 +1069,37 @@ def test_offline_explorer_place_and_graph_helpers(tmp_path):
         ]
     ).to_csv(external_dir / "existing_interurban_stations_matched.csv", index=False)
     assert build_place_index(external_dir, roads) == []
+
+
+def test_offline_explorer_place_index_unmatched_segment(tmp_path, monkeypatch):
+    roads = sample_roads_gdf()
+    import scripts.build_offline_scenario_explorer as boe
+
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "latitude": 40.45,
+                "longitude": -3.7,
+                "address_text": "Municipio: Madrid | Provincia: Madrid",
+            }
+        ]
+    ).to_csv(external_dir / "existing_interurban_stations_matched.csv", index=False)
+
+    original_sjoin_nearest = boe.gpd.sjoin_nearest
+
+    def fake_sjoin_nearest(left, right, how="left", distance_col="distance_to_segment_m"):
+        joined = original_sjoin_nearest(left, right, how=how, distance_col=distance_col)
+        joined["segment_id"] = -1
+        joined[distance_col] = float("nan")
+        return joined
+
+    monkeypatch.setattr(boe.gpd, "sjoin_nearest", fake_sjoin_nearest)
+    places = boe.build_place_index(external_dir, roads)
+    assert places[0]["nearest_segment_id"] == -1
+    assert places[0]["snapped_latitude"] == places[0]["latitude"]
+    assert places[0]["snapped_longitude"] == places[0]["longitude"]
 
 
 def test_scrub_notebook_paths_script(tmp_path, monkeypatch):

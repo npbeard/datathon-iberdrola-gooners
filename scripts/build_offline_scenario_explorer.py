@@ -12,6 +12,7 @@ from typing import Dict, List
 
 import geopandas as gpd
 import pandas as pd
+from shapely.ops import nearest_points
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
@@ -172,7 +173,7 @@ def build_place_index(external_dir: Path, roads_gdf: gpd.GeoDataFrame) -> List[D
         .reset_index(drop=True)
     )
 
-    roads_metric = roads_gdf.to_crs("EPSG:3857")
+    roads_metric = roads_gdf.reset_index(drop=True).to_crs("EPSG:3857")
     place_points = gpd.GeoDataFrame(
         places,
         geometry=gpd.points_from_xy(places["longitude"], places["latitude"]),
@@ -186,6 +187,22 @@ def build_place_index(external_dir: Path, roads_gdf: gpd.GeoDataFrame) -> List[D
     )
     nearest["nearest_segment_id"] = nearest["segment_id"].fillna(-1).astype(int)
     nearest["distance_to_segment_km"] = (nearest["distance_to_segment_m"] / 1000.0).round(2)
+    snapped_lats: List[float] = []
+    snapped_lons: List[float] = []
+    for row in nearest.itertuples(index=False):
+        segment_id = int(getattr(row, "nearest_segment_id", -1))
+        if segment_id < 0:
+            snapped_lats.append(float(row.latitude))
+            snapped_lons.append(float(row.longitude))
+            continue
+        point_metric = row.geometry
+        segment_metric = roads_metric.geometry.iloc[segment_id]
+        snapped_metric = nearest_points(point_metric, segment_metric)[1]
+        snapped_geo = gpd.GeoSeries([snapped_metric], crs="EPSG:3857").to_crs("EPSG:4326").iloc[0]
+        snapped_lats.append(round(float(snapped_geo.y), 6))
+        snapped_lons.append(round(float(snapped_geo.x), 6))
+    nearest["snapped_latitude"] = snapped_lats
+    nearest["snapped_longitude"] = snapped_lons
 
     return (
         nearest[
@@ -200,6 +217,8 @@ def build_place_index(external_dir: Path, roads_gdf: gpd.GeoDataFrame) -> List[D
                 "anchor_count",
                 "nearest_segment_id",
                 "distance_to_segment_km",
+                "snapped_latitude",
+                "snapped_longitude",
             ]
         ]
         .to_dict(orient="records")
@@ -760,6 +779,12 @@ def render_html(
       }}
       const [ox, oy] = project(originPlace.longitude, originPlace.latitude);
       const [dx, dy] = project(destinationPlace.longitude, destinationPlace.latitude);
+      const [osx, osy] = project(originPlace.snapped_longitude, originPlace.snapped_latitude);
+      const [dsx, dsy] = project(destinationPlace.snapped_longitude, destinationPlace.snapped_latitude);
+      fragments.push(`<line x1="${{ox.toFixed(1)}}" y1="${{oy.toFixed(1)}}" x2="${{osx.toFixed(1)}}" y2="${{osy.toFixed(1)}}" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="6 4" opacity="0.7"></line>`);
+      fragments.push(`<line x1="${{dx.toFixed(1)}}" y1="${{dy.toFixed(1)}}" x2="${{dsx.toFixed(1)}}" y2="${{dsy.toFixed(1)}}" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6 4" opacity="0.7"></line>`);
+      fragments.push(`<circle cx="${{osx.toFixed(1)}}" cy="${{osy.toFixed(1)}}" r="4.5" fill="#1d4ed8" fill-opacity="0.18" stroke="#1d4ed8" stroke-width="1.6"></circle>`);
+      fragments.push(`<circle cx="${{dsx.toFixed(1)}}" cy="${{dsy.toFixed(1)}}" r="4.5" fill="#7c3aed" fill-opacity="0.18" stroke="#7c3aed" stroke-width="1.6"></circle>`);
       fragments.push(`<circle cx="${{ox.toFixed(1)}}" cy="${{oy.toFixed(1)}}" r="7" fill="#1d4ed8" stroke="white" stroke-width="2"></circle>`);
       fragments.push(`<circle cx="${{dx.toFixed(1)}}" cy="${{dy.toFixed(1)}}" r="7" fill="#7c3aed" stroke="white" stroke-width="2"></circle>`);
       svg.innerHTML += fragments.join('');
@@ -784,10 +809,11 @@ def render_html(
       const routeStops = drawRouteOverlay(pathIds, origin, destination, scenario);
       const totalDistance = pathIds.reduce((sum, id) => sum + Number(segmentById[id].length_km || 0), 0);
       const avgSupport = pathIds.reduce((sum, id) => sum + Number(supportMap[id] || 0), 0) / pathIds.length;
+      const accessDistance = Number(origin.distance_to_segment_km || 0) + Number(destination.distance_to_segment_km || 0);
       document.getElementById('routeDistance').textContent = `${{Math.round(totalDistance)}} km`;
       document.getElementById('routeSupport').textContent = avgSupport >= 1.0 ? 'High' : avgSupport >= 0.7 ? 'Medium' : 'Low';
       document.getElementById('routeStops').textContent = routeStops.length.toString();
-      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using effective travel cost: road distance adjusted by nearby charging support in the current scenario.`;
+      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using effective travel cost. Dashed access legs connect each municipality to its nearest RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
     }}
 
     function renderScenario() {{
