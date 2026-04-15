@@ -17,6 +17,16 @@ datasets:
     repo_base_url: "https://raw.githubusercontent.com/Admindatosgobes/Laboratorio-de-Datos/main/Data%20Science/Ruta%20a%20la%20electrificaci%C3%B3n%20de%20la%20Movilidad/Datos/"
     monthly_history_output: "data/external/ev_monthly_counts_official.csv"
     projection_output: "data/external/ev_projection_2027.csv"
+  traffic_intensity_mitma:
+    url: "https://mapas.fomento.gob.es/arcgis/rest/services/MapaTrafico/Mapa2019web/MapServer/2/query"
+    raw_path: "data/external/mitma_traffic_segments.geojson"
+    route_summary_output: "data/external/mitma_traffic_by_route.csv"
+  geoportal_gasolineras:
+    url: "https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/"
+    raw_path: "data/external/miterd_estaciones_terrestres.json"
+    matched_output: "data/external/geoportal_gasolineras_matched.csv"
+    fallback_xls_url: "https://geoportalgasolineras.es/resources/files/preciosEESS_es.xls"
+    fallback_xls_path: "data/external/geoportal_gasolineras_eess.xls"
   grid_capacity_endesa:
     url: "https://www.edistribucion.com/content/dam/edistribucion/conexion-a-la-red/descargables/nodos/demanda/202603/2026_03_04_R1299_demanda.csv"
     local_path: "data/external/edistribucion_capacity_2026_03.csv"

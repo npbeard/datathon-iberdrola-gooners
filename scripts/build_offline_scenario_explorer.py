@@ -32,6 +32,7 @@ from scripts.generate_submission_package import (
 )
 from src.data.external_sources import (
     enrich_route_summary_with_baseline,
+    enrich_route_summary_with_traffic,
     enrich_stations_with_grid,
     load_grid_capacity_bundle,
 )
@@ -251,6 +252,9 @@ def build_scenarios(
             total_ev_projected_2027 = int(ev_df["total_ev_projected_2027"].iloc[0])
     grid_nodes = load_grid_capacity_bundle(external_dir)
     business_context, _ = load_business_context(external_dir)
+    traffic_by_route_path = external_dir / "mitma_traffic_by_route.csv"
+    if traffic_by_route_path.exists():
+        route_summary = enrich_route_summary_with_traffic(route_summary, pd.read_csv(traffic_by_route_path))
     route_summary = enrich_route_summary_with_business(route_summary, business_context)
     route_summary = enrich_route_summary_for_planning(route_summary)
 
@@ -562,7 +566,7 @@ def render_html(
         </div>
       </div>
       <div class="card">
-        <h2>Top proposed locations</h2>
+        <h2 id="tableTitle">Top proposed locations</h2>
         <table>
           <thead>
             <tr>
@@ -574,6 +578,7 @@ def render_html(
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
+        <p class="note" id="tableNote">Before a route is selected, this table shows the most prominent proposed sites in the current scenario.</p>
       </div>
     </div>
   </div>
@@ -810,9 +815,13 @@ def render_html(
       const totalDistance = pathIds.reduce((sum, id) => sum + Number(segmentById[id].length_km || 0), 0);
       const avgSupport = pathIds.reduce((sum, id) => sum + Number(supportMap[id] || 0), 0) / pathIds.length;
       const accessDistance = Number(origin.distance_to_segment_km || 0) + Number(destination.distance_to_segment_km || 0);
+      const routeRows = routeStops.map(stop => '<tr><td>' + stop.location_id + '</td><td>' + stop.route_segment + '</td><td>' + stop.n_chargers_proposed + '</td><td>' + stop.grid_status + '</td></tr>').join('');
       document.getElementById('routeDistance').textContent = `${{Math.round(totalDistance)}} km`;
       document.getElementById('routeSupport').textContent = avgSupport >= 1.0 ? 'High' : avgSupport >= 0.7 ? 'Medium' : 'Low';
       document.getElementById('routeStops').textContent = routeStops.length.toString();
+      document.getElementById('tableTitle').textContent = 'Suggested charging stops on this route';
+      document.getElementById('tableBody').innerHTML = routeRows || '<tr><td colspan="4">No recommended charging stops were found close to this corridor path.</td></tr>';
+      document.getElementById('tableNote').textContent = 'These are the strongest proposed charging stops encountered along the selected journey, ranked by charger offer and proximity to the chosen corridor.';
       document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using effective travel cost. Dashed access legs connect each municipality to its nearest RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
     }}
 
@@ -835,6 +844,8 @@ def render_html(
 
       const rows = scenario.file2.slice(0, 12).map(row => `<tr><td>${{row.location_id}}</td><td>${{row.route_segment}}</td><td>${{row.n_chargers_proposed}}</td><td>${{row.grid_status}}</td></tr>`).join('');
       document.getElementById('tableBody').innerHTML = rows;
+      document.getElementById('tableTitle').textContent = 'Top proposed locations';
+      document.getElementById('tableNote').textContent = 'Before a route is selected, this table shows the most prominent proposed sites in the current scenario.';
     }}
 
     function toCsv(rows) {{
@@ -893,6 +904,9 @@ def main() -> None:
     baseline_by_route_path = ROOT / "data" / "external" / "existing_interurban_stations_by_route.csv"
     if baseline_by_route_path.exists():
         route_summary = enrich_route_summary_with_baseline(route_summary, pd.read_csv(baseline_by_route_path))
+    traffic_by_route_path = ROOT / "data" / "external" / "mitma_traffic_by_route.csv"
+    if traffic_by_route_path.exists():
+        route_summary = enrich_route_summary_with_traffic(route_summary, pd.read_csv(traffic_by_route_path))
 
     lines = geometry_to_lines(roads_gdf)
     scenarios = build_scenarios(roads_gdf, route_summary, datathon_cfg)
