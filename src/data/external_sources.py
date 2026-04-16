@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -24,6 +25,9 @@ DEFAULT_NAP_XML_URL = "https://infocar.dgt.es/datex2/v3/miterd/EnergyInfrastruct
 DEFAULT_MITMA_TRAFFIC_URL = "https://mapas.fomento.gob.es/arcgis/rest/services/MapaTrafico/Mapa2019web/MapServer/2/query"
 DEFAULT_GASOLINERAS_JSON_URL = "https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/"
 DEFAULT_GASOLINERAS_XLS_URL = "https://geoportalgasolineras.es/resources/files/preciosEESS_es.xls"
+DEFAULT_INE_MUNICIPAL_POP_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/78750"
+DEFAULT_INE_HOTEL_OVERNIGHT_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/2039"
+DEFAULT_INE_PROVINCIAL_OVERNIGHT_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/48427"
 DEFAULT_EDISTRIBUCION_URL = (
     "https://www.edistribucion.com/content/dam/edistribucion/conexion-a-la-red/"
     "descargables/nodos/demanda/202603/2026_03_04_R1299_demanda.csv"
@@ -497,6 +501,7 @@ def parse_geoportal_gasolineras_json(json_path: Path) -> pd.DataFrame:
         "Remisión": "rem",
         "Horario": "horario",
         "Tipo Servicio": "tipo_servicio",
+        "IDMunicipio": "municipality_id",
     }
     stations = stations.rename(columns={key: value for key, value in rename_map.items() if key in stations.columns}).copy()
     for column in rename_map.values():
@@ -521,9 +526,117 @@ def parse_geoportal_gasolineras_json(json_path: Path) -> pd.DataFrame:
             "rem",
             "horario",
             "tipo_servicio",
+            "municipality_id",
             "source_dataset",
         ]
     ].reset_index(drop=True)
+
+
+def parse_ine_municipal_population_json(json_path: Path, target_year: int = 2025) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["municipality_code", "municipality_name", "population_year", "municipal_population"])
+    if not json_path.exists():
+        return empty
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return empty
+    if not isinstance(payload, list):
+        return empty
+
+    rows: List[Dict[str, object]] = []
+    year_str = str(target_year)
+    for item in payload:
+        name = str(item.get("Nombre", ""))
+        if ", " not in name:
+            continue
+        place_label, sex_label = name.rsplit(", ", 1)
+        if sex_label.strip().lower() != "total":
+            continue
+        if place_label.strip().lower().startswith("national total"):
+            continue
+
+        match = re.match(r"(?P<code>\d{5})\s+(?P<name>.+)", place_label.strip())
+        if not match:
+            continue
+
+        values = item.get("Data", [])
+        population_value = None
+        for observation in values:
+            if str(observation.get("NombrePeriodo", "")) == year_str:
+                population_value = observation.get("Valor")
+                break
+        if population_value in (None, ""):
+            continue
+        rows.append(
+            {
+                "municipality_code": match.group("code"),
+                "municipality_name": match.group("name").strip(),
+                "population_year": target_year,
+                "municipal_population": float(population_value),
+            }
+        )
+
+    if not rows:
+        return empty
+    return pd.DataFrame(rows).drop_duplicates(subset=["municipality_code"]).reset_index(drop=True)
+
+
+def _normalize_lookup_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or ""))
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    normalized = re.sub(r"[^A-Z0-9]+", " ", normalized.upper()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def parse_ine_provincial_overnight_stays_json(
+    json_path: Path,
+    target_year: Optional[int] = None,
+) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["province_name", "tourism_year", "provincial_overnight_stays"])
+    if not json_path.exists():
+        return empty
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return empty
+    if not isinstance(payload, list):
+        return empty
+
+    rows: List[Dict[str, object]] = []
+    for item in payload:
+        name = str(item.get("Nombre", "")).strip()
+        match = re.match(r"Overnight stays\. Total\. (?P<province>.+?)\. Base data\.", name)
+        if not match:
+            continue
+        province_name = match.group("province").strip()
+        if province_name.lower() == "national total":
+            continue
+
+        observations = item.get("Data", [])
+        candidate_values = [
+            (int(observation.get("Anyo", 0)), observation.get("Valor"))
+            for observation in observations
+            if observation.get("Valor") not in (None, "")
+        ]
+        if target_year is not None:
+            candidate_values = [entry for entry in candidate_values if entry[0] == int(target_year)]
+        if not candidate_values:
+            continue
+
+        tourism_year, tourism_value = max(candidate_values, key=lambda entry: entry[0])
+        rows.append(
+            {
+                "province_name": province_name,
+                "tourism_year": int(tourism_year),
+                "provincial_overnight_stays": float(tourism_value),
+            }
+        )
+
+    if not rows:
+        return empty
+    return pd.DataFrame(rows).drop_duplicates(subset=["province_name"]).reset_index(drop=True)
 
 
 def build_geoportal_gasolineras_baseline(
@@ -953,6 +1066,11 @@ def try_build_official_external_inputs(
     gasolineras_json_path = external_dir / "miterd_estaciones_terrestres.json"
     gasolineras_xls_path = external_dir / "geoportal_gasolineras_eess.xls"
     gasolineras_matched_path = external_dir / "geoportal_gasolineras_matched.csv"
+    ine_population_json_path = external_dir / "ine_municipal_population_2025.json"
+    ine_population_csv_path = external_dir / "ine_municipal_population_2025.csv"
+    ine_hotel_overnight_json_path = external_dir / "ine_hotel_overnight_stays.json"
+    ine_provincial_overnight_json_path = external_dir / "ine_provincial_overnight_stays.json"
+    ine_provincial_overnight_csv_path = external_dir / "ine_provincial_overnight_stays.csv"
 
     if not baseline_summary_path.exists() or not baseline_scalar_path.exists():
         if not nap_xml_path.exists():
@@ -1039,6 +1157,37 @@ def try_build_official_external_inputs(
         except (ValueError, ImportError):
             pass
 
+    if not ine_population_json_path.exists() and not ine_population_csv_path.exists():
+        try:
+            download_file(DEFAULT_INE_MUNICIPAL_POP_URL, ine_population_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if ine_population_json_path.exists() and not ine_population_csv_path.exists():
+        try:
+            ine_population = parse_ine_municipal_population_json(ine_population_json_path, target_year=2025)
+            ine_population_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            ine_population.to_csv(ine_population_csv_path, index=False)
+        except json.JSONDecodeError:
+            pass
+
+    if not ine_hotel_overnight_json_path.exists():
+        try:
+            download_file(DEFAULT_INE_HOTEL_OVERNIGHT_URL, ine_hotel_overnight_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if not ine_provincial_overnight_json_path.exists() and not ine_provincial_overnight_csv_path.exists():
+        try:
+            download_file(DEFAULT_INE_PROVINCIAL_OVERNIGHT_URL, ine_provincial_overnight_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if ine_provincial_overnight_json_path.exists() and not ine_provincial_overnight_csv_path.exists():
+        try:
+            tourism = parse_ine_provincial_overnight_stays_json(ine_provincial_overnight_json_path)
+            ine_provincial_overnight_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            tourism.to_csv(ine_provincial_overnight_csv_path, index=False)
+        except json.JSONDecodeError:
+            pass
+
     return {
         "baseline_summary_path": baseline_summary_path,
         "baseline_scalar_path": baseline_scalar_path,
@@ -1046,5 +1195,10 @@ def try_build_official_external_inputs(
         "traffic_summary_path": traffic_summary_path,
         "gasolineras_json_path": gasolineras_json_path,
         "gasolineras_matched_path": gasolineras_matched_path,
+        "ine_population_json_path": ine_population_json_path,
+        "ine_population_csv_path": ine_population_csv_path,
+        "ine_hotel_overnight_json_path": ine_hotel_overnight_json_path,
+        "ine_provincial_overnight_json_path": ine_provincial_overnight_json_path,
+        "ine_provincial_overnight_csv_path": ine_provincial_overnight_csv_path,
         "grid_capacity_paths": [path for path in [edistrib_path, ide_path] if path.exists()],
     }

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import geopandas as gpd
@@ -239,6 +240,67 @@ def test_spatial_matching_baseline_and_route_enrichment(tmp_path):
     empty_gas_json = tmp_path / "gas_empty.json"
     empty_gas_json.write_text('{"ListaEESSPrecio": []}', encoding="utf-8")
     assert es.parse_geoportal_gasolineras_json(empty_gas_json).empty
+    ine_json = tmp_path / "ine_population.json"
+    ine_json.write_text(
+        """
+        [
+          {"Nombre": "National Total, Total", "Data": [{"NombrePeriodo": "2025", "Valor": 49128297.0}]},
+          {"Nombre": "01001 Alegría-Dulantzi, Total", "Data": [{"NombrePeriodo": "2025", "Valor": 2961.0}]},
+          {"Nombre": "01001 Alegría-Dulantzi, Males", "Data": [{"NombrePeriodo": "2025", "Valor": 1523.0}]}
+        ]
+        """,
+        encoding="utf-8",
+    )
+    parsed_population = es.parse_ine_municipal_population_json(ine_json, target_year=2025)
+    assert parsed_population.loc[0, "municipality_code"] == "01001"
+    assert parsed_population.loc[0, "municipal_population"] == 2961.0
+    malformed_ine_json = tmp_path / "ine_population_malformed.json"
+    malformed_ine_json.write_text('{"not":"a list"}', encoding="utf-8")
+    assert es.parse_ine_municipal_population_json(malformed_ine_json, target_year=2025).empty
+    bad_rows_ine_json = tmp_path / "ine_population_bad_rows.json"
+    bad_rows_ine_json.write_text(
+        """
+        [
+          {"Nombre": "Bad row", "Data": [{"NombrePeriodo": "2025", "Valor": 1}]},
+          {"Nombre": "01001 Alegría-Dulantzi, Total", "Data": [{"NombrePeriodo": "2024", "Valor": 2961.0}]},
+          {"Nombre": "ABCDE Foo, Total", "Data": [{"NombrePeriodo": "2025", "Valor": 10.0}]}
+        ]
+        """,
+        encoding="utf-8",
+    )
+    assert es.parse_ine_municipal_population_json(bad_rows_ine_json, target_year=2025).empty
+    tourism_json = tmp_path / "ine_tourism.json"
+    tourism_json.write_text(
+        """
+        [
+          {"Nombre": "Overnight stays. Total. National Total. Base data. ", "Data": [{"Anyo": 2024, "Valor": 170591544.0}]},
+          {"Nombre": "Overnight stays. Total. Madrid. Base data. ", "Data": [{"Anyo": 2024, "Valor": 23500000.0}, {"Anyo": 2023, "Valor": 22000000.0}]},
+          {"Nombre": "Overnight stays. Total. Gipuzkoa. Base data. ", "Data": [{"Anyo": 2024, "Valor": 5100000.0}]}
+        ]
+        """,
+        encoding="utf-8",
+    )
+    parsed_tourism = es.parse_ine_provincial_overnight_stays_json(tourism_json)
+    assert parsed_tourism["province_name"].tolist() == ["Madrid", "Gipuzkoa"]
+    assert parsed_tourism.loc[parsed_tourism["province_name"] == "Madrid", "provincial_overnight_stays"].iloc[0] == 23500000.0
+    target_year_tourism = es.parse_ine_provincial_overnight_stays_json(tourism_json, target_year=2024)
+    assert target_year_tourism["tourism_year"].eq(2024).all()
+    malformed_tourism_json = tmp_path / "ine_tourism_malformed.json"
+    malformed_tourism_json.write_text('{"not":"a list"}', encoding="utf-8")
+    assert es.parse_ine_provincial_overnight_stays_json(malformed_tourism_json).empty
+    missing_year_tourism = tmp_path / "ine_tourism_missing_year.json"
+    missing_year_tourism.write_text(
+        """
+        [
+          {"Nombre": "Overnight stays. Total. Madrid. Base data. ", "Data": [{"Anyo": 2023, "Valor": 22000000.0}]},
+          {"Nombre": "Something else", "Data": [{"Anyo": 2024, "Valor": 1.0}]}
+        ]
+        """,
+        encoding="utf-8",
+    )
+    assert es.parse_ine_provincial_overnight_stays_json(missing_year_tourism, target_year=2024).empty
+    assert es.parse_ine_provincial_overnight_stays_json(tmp_path / "missing_tourism.json").empty
+    assert es._normalize_lookup_text("Álava / Araba") == "ALAVA ARABA"
 
 
 def test_build_ev_projection_from_official_repo(monkeypatch, tmp_path):
@@ -541,6 +603,7 @@ def test_external_source_branch_helpers(tmp_path, monkeypatch):
     assert es.load_mitma_traffic_segments(tmp_path / "missing.geojson").empty
     assert es.parse_geoportal_gasolineras_xls(tmp_path / "missing.xls").empty
     assert es.parse_geoportal_gasolineras_json(tmp_path / "missing.json").empty
+    assert es.parse_ine_municipal_population_json(tmp_path / "missing_ine.json").empty
     assert es.summarize_traffic_by_route(sample_roads(), gpd.GeoDataFrame()).empty
     enriched_no_traffic = es.enrich_route_summary_with_traffic(pd.DataFrame([{"carretera": "A-1"}]), pd.DataFrame())
     assert enriched_no_traffic.loc[0, "traffic_imd_total"] == 0.0
@@ -708,6 +771,15 @@ def test_external_source_branch_helpers(tmp_path, monkeypatch):
     (cached_dir / "edistribucion_capacity_2026_03.csv").write_text("dummy\n", encoding="utf-8")
     (cached_dir / "ide_capacity_2026_02.csv").write_text("dummy\n", encoding="utf-8")
     (cached_dir / "geoportal_gasolineras_matched.csv").write_text("latitude,longitude,carretera\n40.5,-3.5,A-1\n", encoding="utf-8")
+    (cached_dir / "ine_municipal_population_2025.csv").write_text(
+        "municipality_code,municipality_name,population_year,municipal_population\n28079,MADRID,2025,3305408\n",
+        encoding="utf-8",
+    )
+    (cached_dir / "ine_hotel_overnight_stays.json").write_text("[]", encoding="utf-8")
+    (cached_dir / "ine_provincial_overnight_stays.csv").write_text(
+        "province_name,tourism_year,provincial_overnight_stays\nMadrid,2024,23500000\n",
+        encoding="utf-8",
+    )
 
     called = {"download": 0}
 
@@ -921,6 +993,35 @@ def test_download_arcgis_geojson_and_traffic_try_build(tmp_path, monkeypatch, re
     )
     assert saved.exists()
     assert "FeatureCollection" in saved.read_text(encoding="utf-8")
+    short_batch_output = tmp_path / "traffic_short.geojson"
+    def fake_short_batch(url, params=None, timeout=180):
+        class Response:
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"ID": 2},
+                            "geometry": {"type": "LineString", "coordinates": [[-4.0, 40.0], [-3.5, 40.5]]},
+                        }
+                    ],
+                }
+        return Response()
+    monkeypatch.setattr(
+        es.requests,
+        "get",
+        fake_short_batch,
+    )
+    short_saved = es.download_arcgis_geojson_paginated(
+        es.DEFAULT_MITMA_TRAFFIC_URL,
+        short_batch_output,
+        out_fields=["ID"],
+        batch_size=5,
+    )
+    assert short_saved.exists()
 
     ext_dir = tmp_path / "official"
     ext_dir.mkdir()
@@ -990,10 +1091,18 @@ def test_download_arcgis_geojson_and_traffic_try_build(tmp_path, monkeypatch, re
             ]
         ),
     )
+    monkeypatch.setattr(
+        es,
+        "parse_ine_municipal_population_json",
+        lambda path, target_year=2025: pd.DataFrame(
+            [{"municipality_code": "28079", "municipality_name": "Madrid", "population_year": 2025, "municipal_population": 3305408.0}]
+        ),
+    )
     result = es.try_build_official_external_inputs(sample_roads(), ext_dir, target_year=2027)
     assert result["traffic_summary_path"].exists()
     assert result["gasolineras_json_path"].exists()
     assert result["gasolineras_matched_path"].exists()
+    assert result["ine_population_csv_path"].exists()
 
     failed_ext_dir = tmp_path / "official-failed-traffic"
     failed_ext_dir.mkdir()
@@ -1050,3 +1159,34 @@ def test_download_arcgis_geojson_and_traffic_try_build(tmp_path, monkeypatch, re
     )
     fallback_gas_result = es.try_build_official_external_inputs(sample_roads(), failed_gas_fallback_dir, target_year=2027)
     assert fallback_gas_result["gasolineras_matched_path"].exists()
+
+    failed_ine_dir = tmp_path / "official-failed-ine"
+    failed_ine_dir.mkdir()
+    monkeypatch.setattr(
+        es,
+        "download_file",
+        lambda url, output_path, timeout=180: (_ for _ in ()).throw(ValueError("ine unavailable"))
+        if "wstempus" in url
+        else fake_download(url, output_path, timeout=timeout),
+    )
+    failed_ine_result = es.try_build_official_external_inputs(sample_roads(), failed_ine_dir, target_year=2027)
+    assert not failed_ine_result["ine_population_json_path"].exists()
+    assert not failed_ine_result["ine_provincial_overnight_json_path"].exists()
+
+    failed_ine_parse_dir = tmp_path / "official-failed-ine-parse"
+    failed_ine_parse_dir.mkdir()
+    (failed_ine_parse_dir / "ine_municipal_population_2025.json").write_text("{}", encoding="utf-8")
+    (failed_ine_parse_dir / "ine_provincial_overnight_stays.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        es,
+        "parse_ine_municipal_population_json",
+        lambda path, target_year=2025: (_ for _ in ()).throw(json.JSONDecodeError("bad", "{}", 0)),
+    )
+    monkeypatch.setattr(
+        es,
+        "parse_ine_provincial_overnight_stays_json",
+        lambda path, target_year=None: (_ for _ in ()).throw(json.JSONDecodeError("bad", "{}", 0)),
+    )
+    failed_ine_parse_result = es.try_build_official_external_inputs(sample_roads(), failed_ine_parse_dir, target_year=2027)
+    assert not failed_ine_parse_result["ine_population_csv_path"].exists()
+    assert not failed_ine_parse_result["ine_provincial_overnight_csv_path"].exists()

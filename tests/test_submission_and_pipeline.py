@@ -429,12 +429,23 @@ def test_business_context_edge_cases(tmp_path):
     assert gsp._business_signal_for_point(40.0, -3.0, "A-9", None) == 0.0
 
     gas_path = tmp_path / "geoportal_gasolineras_matched.csv"
+    population_path = tmp_path / "ine_municipal_population_2025.csv"
+    tourism_path = tmp_path / "ine_provincial_overnight_stays.csv"
+    pd.DataFrame(
+        [{"municipality_code": "28079", "municipality_name": "MADRID", "population_year": 2025, "municipal_population": 3305408.0}]
+    ).to_csv(population_path, index=False)
+    pd.DataFrame(
+        [{"province_name": "Madrid", "tourism_year": 2024, "provincial_overnight_stays": 23500000.0}]
+    ).to_csv(tourism_path, index=False)
     pd.DataFrame(
         [
             {
                 "latitude": 40.1,
                 "longitude": -3.1,
                 "carretera": "A-2",
+                "provincia": "Madrid",
+                "municipality_id": "",
+                "municipio": "Madrid",
                 "is_interurban_match": True,
                 "distance_to_route_km": 1.0,
                 "tipo_venta": "P",
@@ -445,7 +456,11 @@ def test_business_context_edge_cases(tmp_path):
     ).to_csv(gas_path, index=False)
     combined_context, combined_status = gsp.load_business_context(tmp_path)
     assert "loaded:geoportal_gasolineras_matched.csv" in combined_status
+    assert "loaded:ine_municipal_population_2025.csv" in combined_status
+    assert "loaded:ine_provincial_overnight_stays.csv" in combined_status
     assert (combined_context["business_score"] > 0).any()
+    assert (combined_context["municipal_population"] > 0).any()
+    assert (combined_context["tourism_overnight_stays"] > 0).any()
 
     pd.DataFrame(columns=["latitude", "longitude"]).to_csv(gas_path, index=False)
     empty_gas_context, empty_gas_status = gsp.load_business_context(tmp_path)
@@ -927,6 +942,9 @@ datasets: {}
     pd.DataFrame([{"carretera": "A-1", "traffic_imd_total": 15000, "traffic_imd_pesado": 1800, "traffic_heavy_share": 0.12, "traffic_match_count": 2}]).to_csv(
         root / "data" / "external" / "mitma_traffic_by_route.csv", index=False
     )
+    pd.DataFrame([{"municipality_code": "28079", "municipality_name": "MADRID", "population_year": 2025, "municipal_population": 3305408.0}]).to_csv(
+        root / "data" / "external" / "ine_municipal_population_2025.csv", index=False
+    )
     pd.DataFrame(
         [
             {
@@ -983,6 +1001,7 @@ datasets: {}
     assert not business_context.empty
     route_with_business = gsp.enrich_route_summary_with_business(gsp.summarize_routes(roads), business_context)
     assert "business_support_score" in route_with_business.columns
+    assert "market_access_population" in route_with_business.columns
 
 
 def test_offline_explorer_additional_branches(tmp_path, monkeypatch):

@@ -675,7 +675,14 @@ def render_html(
       return count;
     }}
 
-    const segmentById = Object.fromEntries(routeGraph.segments.map(segment => [segment.id, segment]));
+    const segmentIds = routeGraph.segments.map(segment => Number(segment.id));
+    const segmentById = new Map(routeGraph.segments.map(segment => [Number(segment.id), segment]));
+    const adjacencyById = new Map(
+      Object.entries(routeGraph.adjacency).map(([segmentId, neighbors]) => [
+        Number(segmentId),
+        (neighbors || []).map(neighbor => Number(neighbor)),
+      ]),
+    );
     const scenarioSupportCache = {{}};
 
     function segmentSupportMap(scenario) {{
@@ -694,63 +701,144 @@ def render_html(
           const proximityWeight = distance <= 12 ? 1.0 : distance <= 20 ? 0.7 : 0.45;
           best = Math.max(best, routeBoost * gridWeight * chargerWeight * proximityWeight);
         }}
-        support[segment.id] = Number(best.toFixed(3));
+        support[Number(segment.id)] = Number(best.toFixed(3));
       }}
       scenarioSupportCache[cacheKey] = support;
       return support;
     }}
 
-    function segmentCost(segment, supportValue) {{
-      let factor = 1.08;
-      if (supportValue >= 1.1) factor = 0.83;
-      else if (supportValue >= 0.85) factor = 0.89;
-      else if (supportValue >= 0.6) factor = 0.96;
-      if (segment.length_km >= 45 && supportValue < 0.6) factor += 0.10;
+    function segmentCost(segment, supportValue, mode='balanced') {{
+      if (mode === 'distance') return segment.length_km;
+      let factor = 1.03;
+      if (supportValue >= 1.1) factor = 0.94;
+      else if (supportValue >= 0.85) factor = 0.97;
+      else if (supportValue >= 0.6) factor = 1.0;
+      if (segment.length_km >= 45 && supportValue < 0.6) factor += 0.06;
       return segment.length_km * factor;
     }}
 
-    function shortestPath(startId, endId, supportMap) {{
-      const distances = {{}};
-      const previous = {{}};
+    function shortestPath(startId, endId, supportMap, mode='balanced') {{
+      const normalizedStart = Number(startId);
+      const normalizedEnd = Number(endId);
+      const distances = new Map();
+      const previous = new Map();
       const visited = new Set();
-      for (const segment of routeGraph.segments) distances[segment.id] = Infinity;
-      distances[startId] = 0;
+      for (const segmentId of segmentIds) distances.set(segmentId, Infinity);
+      distances.set(normalizedStart, 0);
 
       while (true) {{
         let current = null;
         let bestDistance = Infinity;
-        for (const segment of routeGraph.segments) {{
-          if (!visited.has(segment.id) && distances[segment.id] < bestDistance) {{
-            bestDistance = distances[segment.id];
-            current = segment.id;
+        for (const segmentId of segmentIds) {{
+          const candidateDistance = distances.get(segmentId);
+          if (!visited.has(segmentId) && candidateDistance < bestDistance) {{
+            bestDistance = candidateDistance;
+            current = segmentId;
           }}
         }}
-        if (current === null || current === endId) break;
+        if (current === null || current === normalizedEnd) break;
         visited.add(current);
-        for (const neighbor of routeGraph.adjacency[String(current)] || []) {{
+        for (const neighbor of adjacencyById.get(current) || []) {{
           if (visited.has(neighbor)) continue;
-          const neighborSegment = segmentById[neighbor];
-          const alt = distances[current] + segmentCost(neighborSegment, supportMap[neighbor] || 0);
-          if (alt < distances[neighbor]) {{
-            distances[neighbor] = alt;
-            previous[neighbor] = current;
+          const neighborSegment = segmentById.get(neighbor);
+          if (!neighborSegment) continue;
+          const alt = distances.get(current) + segmentCost(neighborSegment, supportMap[neighbor] || 0, mode);
+          if (alt < distances.get(neighbor)) {{
+            distances.set(neighbor, alt);
+            previous.set(neighbor, current);
           }}
         }}
       }}
 
-      if (!Number.isFinite(distances[endId])) return null;
+      if (!Number.isFinite(distances.get(normalizedEnd))) return null;
       const path = [];
-      let cursor = endId;
+      let cursor = normalizedEnd;
       while (cursor !== undefined) {{
         path.push(cursor);
-        cursor = previous[cursor];
+        cursor = previous.get(cursor);
       }}
       path.reverse();
-      return path;
+      return path[0] === normalizedStart ? path : null;
+    }}
+
+    function pathDistanceKm(pathIds) {{
+      return pathIds.reduce((sum, id) => sum + Number((segmentById.get(Number(id)) || {{}}).length_km || 0), 0);
+    }}
+
+    function candidateSegmentIds(place, maxCandidates=6, maxDistanceKm=90) {{
+      const ranked = routeGraph.segments
+        .map(segment => ({{
+          id: segment.id,
+          distanceKm: haversineKm(place.latitude, place.longitude, segment.centroid_lat, segment.centroid_lon),
+        }}))
+        .filter(item => Number.isFinite(item.distanceKm))
+        .sort((a, b) => a.distanceKm - b.distanceKm);
+      const nearby = ranked.filter(item => item.distanceKm <= maxDistanceKm).slice(0, maxCandidates);
+      if (nearby.length) return nearby;
+      return ranked.slice(0, Math.min(maxCandidates, ranked.length));
+    }}
+
+    function bestCorridorPath(originPlace, destinationPlace, supportMap) {{
+      const originCandidates = candidateSegmentIds(originPlace);
+      const destinationCandidates = candidateSegmentIds(destinationPlace);
+      let best = null;
+      let bestDistanceOnly = null;
+      const directDistanceKm = haversineKm(
+        originPlace.latitude,
+        originPlace.longitude,
+        destinationPlace.latitude,
+        destinationPlace.longitude,
+      );
+      const maxReasonableDistanceKm = Math.max(directDistanceKm * 2.15, directDistanceKm + 250);
+
+      for (const originCandidate of originCandidates) {{
+        for (const destinationCandidate of destinationCandidates) {{
+          const distancePath = shortestPath(originCandidate.id, destinationCandidate.id, supportMap, 'distance');
+          if (!distancePath || !distancePath.length) continue;
+          const supportPath = shortestPath(originCandidate.id, destinationCandidate.id, supportMap, 'balanced');
+          const distanceKm = pathDistanceKm(distancePath);
+          const supportDistanceKm = supportPath && supportPath.length ? pathDistanceKm(supportPath) : Infinity;
+          const distanceSlackKm = Math.max(35, distanceKm * 0.12);
+          const chosenPath = supportDistanceKm <= distanceKm + distanceSlackKm ? supportPath : distancePath;
+          const chosenDistanceKm = pathDistanceKm(chosenPath);
+          const accessKm = originCandidate.distanceKm + destinationCandidate.distanceKm;
+          const score = chosenDistanceKm + accessKm * 1.35;
+          const distanceOnlyScore = distanceKm + accessKm * 1.35;
+          const distanceOnlyCandidate = {{
+            pathIds: distancePath,
+            totalDistanceKm: distanceKm,
+            accessDistanceKm: accessKm,
+            originSegmentId: originCandidate.id,
+            destinationSegmentId: destinationCandidate.id,
+            mode: 'distance-first corridor routing',
+          }};
+          if (!bestDistanceOnly || distanceOnlyScore < bestDistanceOnly.score) {{
+            bestDistanceOnly = {{ score: distanceOnlyScore, ...distanceOnlyCandidate }};
+          }}
+          if (!best || score < best.score) {{
+            best = {{
+              pathIds: chosenPath,
+              totalDistanceKm: chosenDistanceKm,
+              accessDistanceKm: accessKm,
+              originSegmentId: originCandidate.id,
+              destinationSegmentId: destinationCandidate.id,
+              mode: chosenPath === distancePath ? 'distance-first corridor routing' : 'distance-first corridor routing with charging-support tie-breaking',
+            }};
+          }}
+        }}
+      }}
+
+      if (best && best.totalDistanceKm > maxReasonableDistanceKm && bestDistanceOnly) {{
+        return {{
+          ...bestDistanceOnly,
+          mode: 'distance-first corridor routing (sanity fallback)',
+        }};
+      }}
+      return best;
     }}
 
     function suggestStops(pathIds, scenario) {{
-      const touched = pathIds.map(id => segmentById[id]);
+      const touched = pathIds.map(id => segmentById.get(Number(id))).filter(Boolean);
       const stations = scenario.file2.filter(station => {{
         return touched.some(segment => haversineKm(segment.centroid_lat, segment.centroid_lon, station.latitude, station.longitude) <= 22);
       }});
@@ -768,7 +856,8 @@ def render_html(
     function drawRouteOverlay(pathIds, originPlace, destinationPlace, scenario) {{
       const fragments = [];
       for (const id of pathIds) {{
-        const segment = segmentById[id];
+        const segment = segmentById.get(Number(id));
+        if (!segment) continue;
         for (const part of segment.parts) {{
           const path = part.map((coord, idx) => {{
             const [x, y] = project(coord[0], coord[1]);
@@ -784,8 +873,10 @@ def render_html(
       }}
       const [ox, oy] = project(originPlace.longitude, originPlace.latitude);
       const [dx, dy] = project(destinationPlace.longitude, destinationPlace.latitude);
-      const [osx, osy] = project(originPlace.snapped_longitude, originPlace.snapped_latitude);
-      const [dsx, dsy] = project(destinationPlace.snapped_longitude, destinationPlace.snapped_latitude);
+      const originSegment = segmentById.get(Number(pathIds[0]));
+      const destinationSegment = segmentById.get(Number(pathIds[pathIds.length - 1]));
+      const [osx, osy] = project(originSegment.centroid_lon, originSegment.centroid_lat);
+      const [dsx, dsy] = project(destinationSegment.centroid_lon, destinationSegment.centroid_lat);
       fragments.push(`<line x1="${{ox.toFixed(1)}}" y1="${{oy.toFixed(1)}}" x2="${{osx.toFixed(1)}}" y2="${{osy.toFixed(1)}}" stroke="#1d4ed8" stroke-width="2" stroke-dasharray="6 4" opacity="0.7"></line>`);
       fragments.push(`<line x1="${{dx.toFixed(1)}}" y1="${{dy.toFixed(1)}}" x2="${{dsx.toFixed(1)}}" y2="${{dsy.toFixed(1)}}" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6 4" opacity="0.7"></line>`);
       fragments.push(`<circle cx="${{osx.toFixed(1)}}" cy="${{osy.toFixed(1)}}" r="4.5" fill="#1d4ed8" fill-opacity="0.18" stroke="#1d4ed8" stroke-width="1.6"></circle>`);
@@ -805,16 +896,17 @@ def render_html(
       }}
       const scenario = scenarios[currentKey()];
       const supportMap = segmentSupportMap(scenario);
-      const pathIds = shortestPath(origin.nearest_segment_id, destination.nearest_segment_id, supportMap);
-      if (!pathIds || !pathIds.length) {{
+      const routeChoice = bestCorridorPath(origin, destination, supportMap);
+      if (!routeChoice || !routeChoice.pathIds || !routeChoice.pathIds.length) {{
         document.getElementById('routeMessage').textContent = `No corridor path was found between ${{origin.display_name}} and ${{destination.display_name}} in the local RTIG graph.`;
         return;
       }}
+      const pathIds = routeChoice.pathIds;
       renderScenario();
       const routeStops = drawRouteOverlay(pathIds, origin, destination, scenario);
-      const totalDistance = pathIds.reduce((sum, id) => sum + Number(segmentById[id].length_km || 0), 0);
+      const totalDistance = routeChoice.totalDistanceKm;
       const avgSupport = pathIds.reduce((sum, id) => sum + Number(supportMap[id] || 0), 0) / pathIds.length;
-      const accessDistance = Number(origin.distance_to_segment_km || 0) + Number(destination.distance_to_segment_km || 0);
+      const accessDistance = routeChoice.accessDistanceKm;
       const routeRows = routeStops.map(stop => '<tr><td>' + stop.location_id + '</td><td>' + stop.route_segment + '</td><td>' + stop.n_chargers_proposed + '</td><td>' + stop.grid_status + '</td></tr>').join('');
       document.getElementById('routeDistance').textContent = `${{Math.round(totalDistance)}} km`;
       document.getElementById('routeSupport').textContent = avgSupport >= 1.0 ? 'High' : avgSupport >= 0.7 ? 'Medium' : 'Low';
@@ -822,7 +914,7 @@ def render_html(
       document.getElementById('tableTitle').textContent = 'Suggested charging stops on this route';
       document.getElementById('tableBody').innerHTML = routeRows || '<tr><td colspan="4">No recommended charging stops were found close to this corridor path.</td></tr>';
       document.getElementById('tableNote').textContent = 'These are the strongest proposed charging stops encountered along the selected journey, ranked by charger offer and proximity to the chosen corridor.';
-      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using effective travel cost. Dashed access legs connect each municipality to its nearest RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
+      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using ${{routeChoice.mode}} across several nearby corridor entry options. Dashed access legs connect each municipality to the chosen RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
     }}
 
     function renderScenario() {{

@@ -27,6 +27,16 @@ datasets:
     matched_output: "data/external/geoportal_gasolineras_matched.csv"
     fallback_xls_url: "https://geoportalgasolineras.es/resources/files/preciosEESS_es.xls"
     fallback_xls_path: "data/external/geoportal_gasolineras_eess.xls"
+  ine_municipal_population:
+    url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/78750"
+    raw_path: "data/external/ine_municipal_population_2025.json"
+    processed_output: "data/external/ine_municipal_population_2025.csv"
+  ine_tourism_overnight_stays:
+    hotel_url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/2039"
+    hotel_raw_path: "data/external/ine_hotel_overnight_stays.json"
+    provincial_url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/48427"
+    provincial_raw_path: "data/external/ine_provincial_overnight_stays.json"
+    provincial_processed_output: "data/external/ine_provincial_overnight_stays.csv"
   grid_capacity_endesa:
     url: "https://www.edistribucion.com/content/dam/edistribucion/conexion-a-la-red/descargables/nodos/demanda/202603/2026_03_04_R1299_demanda.csv"
     local_path: "data/external/edistribucion_capacity_2026_03.csv"
