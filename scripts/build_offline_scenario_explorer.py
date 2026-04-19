@@ -489,7 +489,7 @@ def render_html(
     <div class="hero">
       <div class="card">
         <h1>Offline Scenario Explorer</h1>
-        <p>This prototype is meant to show the jury how a planner at Iberdrola could compare a few rollout assumptions locally, without installing anything or depending on an internet connection.</p>
+        <p>This prototype is meant to show how our team compares a few rollout assumptions locally, without installing anything or depending on an internet connection.</p>
         <div class="controls">
           <div>
             <label for="spacing">Station spacing</label>
@@ -525,7 +525,7 @@ def render_html(
       </div>
       <div class="card">
         <h2>Why this matters</h2>
-        <p>The point is not to show a huge web platform. The point is to let the jury test a few planning assumptions and immediately see how the network changes. This keeps the artifact simple and still gives Iberdrola something interactive.</p>
+        <p>The point is not to show a huge web platform. The point is to let someone explore a few planning assumptions and immediately see how the network changes. This keeps the artifact simple while still giving Iberdrola something interactive.</p>
         <div class="route-controls">
           <div>
             <label for="originInput">Origin city or town</label>

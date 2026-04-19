@@ -32,6 +32,7 @@ from src.data.external_sources import (
     load_grid_capacity_bundle,
     try_build_official_external_inputs,
 )
+from src.visualization.offline_dashboard import build_offline_dashboard
 DEFAULT_INPUT = ROOT / "data" / "processed" / "roads_processed_gdf.parquet"
 
 STATUS_COLORS = {
@@ -1346,6 +1347,7 @@ def main() -> None:
 
     output_dir = ROOT / datathon_cfg["output_dir"]
     map_output = ROOT / datathon_cfg["map_output"]
+    dashboard_output = ROOT / "maps" / "dashboard.html"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     roads_gdf = load_roads_dataset(DEFAULT_INPUT)
@@ -1416,7 +1418,27 @@ def main() -> None:
     file_1.to_csv(output_dir / "File 1.csv", index=False)
     file_2.to_csv(output_dir / "File 2.csv", index=False)
     file_3.to_csv(output_dir / "File 3.csv", index=False)
-    save_map(file_2_enriched, map_output, roads_gdf=roads_gdf)
+    build_offline_dashboard(
+        file_1=file_1,
+        stations_df=file_2_enriched,
+        file_3=file_3,
+        roads_gdf=roads_gdf,
+        route_summary=route_summary,
+        output_path=map_output,
+        title="Iberdrola 2027 Interurban Charging Network",
+        embed_explorer=False,
+    )
+    build_offline_dashboard(
+        file_1=file_1,
+        stations_df=file_2_enriched,
+        file_3=file_3,
+        roads_gdf=roads_gdf,
+        route_summary=route_summary,
+        output_path=dashboard_output,
+        title="Iberdrola Interurban Charging Network Dashboard",
+        embed_explorer=True,
+        explorer_path="offline_scenario_explorer.html",
+    )
     save_assumptions_note(
         output_dir,
         baseline_status=baseline_status,
@@ -1431,6 +1453,7 @@ def main() -> None:
     print(f"Saved: {output_dir / 'File 2.csv'}")
     print(f"Saved: {output_dir / 'File 3.csv'}")
     print(f"Saved: {map_output}")
+    print(f"Saved: {dashboard_output}")
 
 
 if __name__ == "__main__":  # pragma: no cover
