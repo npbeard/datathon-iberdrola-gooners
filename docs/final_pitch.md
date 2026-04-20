@@ -1,82 +1,75 @@
-# Final Pitch Outline
+# Final Pitch
+## IE Iberdrola Datathon March 2026
 
 ## Slide 1: The Problem
 
-We started from the idea that Spain’s interurban EV network still faces two main bottlenecks:
+When we started this project, the main idea was simple: Spain needs better interurban EV coverage, but not every good road location is actually feasible from the grid side.
 
-- long-distance "range anxiety" on national corridors
-- local grid capacity that makes some attractive road locations unbuildable today
-
-Our objective was to design the leanest possible interurban charging network for 2027 that Iberdrola could realistically act on.
+So our objective was to design a 2027 interurban charging network that covers long-distance mobility demand with as few new stations as possible, while still being realistic about electrical constraints.
 
 ## Slide 2: Our Approach
 
-We combined five layers:
+We combined five main layers:
 
 1. RTIG interurban corridors
-2. existing official public charging baseline
-3. the mandatory datos.gob.es EV-electrification workflow for 2027
-4. distributor grid-capacity data from i-DE, Endesa, and Viesgo
-5. business-demand signals from MITERD roadside-service data and INE population/tourism data
+2. the existing official charging baseline
+3. the mandatory `datos.gob.es` EV projection for 2027
+4. grid-capacity data from i-DE, Endesa, and Viesgo
+5. demand and stop-quality signals from traffic, roadside services, population, and tourism data
 
-That lets us answer not just “where demand exists” but “where demand, commercial attractiveness, and electrical feasibility align.”
+This helped us move away from a purely geographic approach and towards something that is closer to a real deployment decision.
 
 ## Slide 3: Methodology
 
-We ranked corridor need using:
+We ranked corridors using:
 
 - route length and PK span
-- TEN-T strategic relevance
-- baseline charging scarcity
+- TEN-T relevance
+- scarcity of existing charging supply
 - route complexity
-- MITMA traffic intensity
-- business-fit proxies from roadside services, municipal population, and overnight-stay demand
+- traffic intensity and heavy-vehicle share
+- business and demand proxies
 
-We then translated that score into dynamic station spacing, merged duplicate candidate coordinates, and tested each site against the nearest available grid node using the fixed 150 kW per charger standard from the brief.
+After that, we translated corridor need into dynamic spacing around a `120 km` reference, merged duplicated site coordinates on the same route, and checked each proposed location against the nearest available grid node using the Datathon rule of `150 kW` per charger.
 
 ## Slide 4: The Output
 
-In terms of outputs, we deliver exactly what the brief requires:
+Our current validated package contains:
 
-- `File 1.csv`: network KPI scorecard
-- `File 2.csv`: proposed charging sites
-- `File 3.csv`: friction points
-- a self-contained offline BI visualization
+- `252` proposed charging sites
+- `1,742` chargers
+- `153` friction points
+- `549,226` projected EVs in 2027
 
-The key difference is that we do not treat friction points as failures. We treat them as part of a phased deployment queue.
+Grid status split:
 
-## Slide 5: Why The Sites Are Business-Sensible
+- `99` Sufficient
+- `15` Moderate
+- `138` Congested
 
-We did not want to optimise only for road geometry.
+These outputs feed directly into the required deliverables:
 
-We also favoured places where an interurban fast-charging stop is more commercially credible:
+- `File 1.csv`
+- `File 2.csv`
+- `File 3.csv`
+- `maps/proposed_charging_network.html`
 
-- roadside service ecosystems already exist
-- nearby market access is larger
-- tourism and overnight-stay demand is stronger
+## Slide 5: Why It Matters
 
-We think this makes the plan easier to defend as an Iberdrola investment roadmap, not just as an academic network design.
+For us, the most important result is that many strong corridor opportunities are limited less by mobility demand and more by grid conditions.
 
-## Slide 6: Strategic Message
+That naturally turns the proposal into a phased plan:
 
-We classify sites into three practical business actions:
+- `Sufficient`: build first
+- `Moderate`: phase carefully
+- `Congested`: reinforce first
 
-- `Sufficient`: build now
-- `Moderate`: build with limited reinforcement or staged rollout
-- `Congested`: protect the location strategically, but reinforce first
+This helps Iberdrola avoid two common problems: overbuilding where coverage already exists and prioritising locations that look good on a map but are not ready from the grid side.
 
-This gives a more realistic 2027 roadmap instead of just a map of good intentions.
+## Slide 6: Final Message
 
-## Slide 7: Why This Matters
-
-Our project helps Iberdrola:
-
-- minimise redundant interurban sites
-- focus capital on corridors with the clearest mobility value
-- avoid proposing locations that fail the grid-feasibility test
-- prioritise stop environments that are more attractive for drivers and co-located services
-- separate immediate wins from longer-term infrastructure plays
+Our recommendation is to start where corridor need and grid feasibility already align, and then use the friction points to guide where reinforcement would unlock the next wave of interurban charging.
 
 ## Closing Line
 
-We are not only proposing where chargers could go. We are proposing how Iberdrola could sequence the next wave of interurban charging investment in Spain, focusing on sites that are needed, buildable, and commercially credible.
+We are not just showing where chargers could be placed. We are showing how Iberdrola could prioritise interurban charging rollout in Spain for 2027 in a more realistic way.
