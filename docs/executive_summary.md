@@ -231,6 +231,4 @@ From our point of view, the project is useful for Iberdrola for a few reasons:
 
 ## 10. Final Takeaway
 
-If we had to summarize our project in one sentence, it would be this:
-
 We are not only proposing where chargers could go. We are proposing a practical way for Iberdrola to prioritize interurban charging investment in Spain for 2027, while being honest about where the grid still gets in the way.

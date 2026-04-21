@@ -69,5 +69,5 @@ def main() -> None:
     print(f"Saved: {ROOT / 'maps' / 'dashboard.html'}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

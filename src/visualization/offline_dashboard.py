@@ -187,8 +187,9 @@ def _route_summary_payload(route_summary: pd.DataFrame, stations_df: pd.DataFram
         available_cols = [column for column in route_cols if column in route_summary.columns]
         merged = merged.merge(route_summary[available_cols], on="carretera", how="left")
 
+    service_need = merged["service_need_score"].fillna(0.0) if "service_need_score" in merged.columns else pd.Series(0.0, index=merged.index)
     merged["priority_index"] = (
-        merged.get("service_need_score", 0).fillna(0.0) * 100.0
+        service_need * 100.0
         + merged["chargers"].astype(float) * 0.45
         + merged["friction_points"].astype(float) * 0.30
     )
