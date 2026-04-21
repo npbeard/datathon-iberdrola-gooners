@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -20,6 +22,12 @@ DATOS_GOB_BASE = (
     + quote("Data Science/Ruta a la electrificación de la Movilidad/Datos/")
 )
 DEFAULT_NAP_XML_URL = "https://infocar.dgt.es/datex2/v3/miterd/EnergyInfrastructureTablePublication/electrolineras.xml"
+DEFAULT_MITMA_TRAFFIC_URL = "https://mapas.fomento.gob.es/arcgis/rest/services/MapaTrafico/Mapa2019web/MapServer/2/query"
+DEFAULT_GASOLINERAS_JSON_URL = "https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/"
+DEFAULT_GASOLINERAS_XLS_URL = "https://geoportalgasolineras.es/resources/files/preciosEESS_es.xls"
+DEFAULT_INE_MUNICIPAL_POP_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/78750"
+DEFAULT_INE_HOTEL_OVERNIGHT_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/2039"
+DEFAULT_INE_PROVINCIAL_OVERNIGHT_URL = "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/48427"
 DEFAULT_EDISTRIBUCION_URL = (
     "https://www.edistribucion.com/content/dam/edistribucion/conexion-a-la-red/"
     "descargables/nodos/demanda/202603/2026_03_04_R1299_demanda.csv"
@@ -35,6 +43,46 @@ def download_file(url: str, output_path: Path, timeout: int = 180) -> Path:
         raise ValueError(f"Remote source unavailable for {url}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(content)
+    return output_path
+
+
+def download_arcgis_geojson_paginated(
+    query_url: str,
+    output_path: Path,
+    out_fields: Iterable[str],
+    where: str = "1=1",
+    batch_size: int = 1000,
+    timeout: int = 180,
+) -> Path:
+    features: List[Dict[str, object]] = []
+    offset = 0
+    requested_fields = ",".join(out_fields)
+
+    while True:
+        response = requests.get(
+            query_url,
+            params={
+                "where": where,
+                "outFields": requested_fields,
+                "f": "geojson",
+                "outSR": 4326,
+                "resultOffset": offset,
+                "resultRecordCount": batch_size,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        batch = payload.get("features", [])
+        if not batch:
+            break
+        features.extend(batch)
+        if len(batch) < batch_size:
+            break
+        offset += batch_size
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}), encoding="utf-8")
     return output_path
 
 
@@ -209,6 +257,403 @@ def enrich_route_summary_with_baseline(route_summary: pd.DataFrame, baseline_by_
 
     enriched["coverage_gap_score"] = enriched["route_score"] / (1 + enriched["existing_station_count"])
     return enriched.sort_values("coverage_gap_score", ascending=False).reset_index(drop=True)
+
+
+def load_mitma_traffic_segments(path: Path) -> gpd.GeoDataFrame:
+    if not path.exists():
+        return gpd.GeoDataFrame(
+            columns=["traffic_route_name", "traffic_length_km", "traffic_imd_total", "traffic_imd_pesado", "geometry"],
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+
+    traffic = gpd.read_file(path)
+    if traffic.empty:
+        return gpd.GeoDataFrame(
+            columns=["traffic_route_name", "traffic_length_km", "traffic_imd_total", "traffic_imd_pesado", "geometry"],
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+    if traffic.crs is None:
+        traffic = traffic.set_crs("EPSG:4326")
+    elif traffic.crs.to_string() != "EPSG:4326":
+        traffic = traffic.to_crs("EPSG:4326")
+
+    rename_map = {
+        "Nombre": "traffic_route_name",
+        "Longitud": "traffic_length_km",
+        "IMD_total": "traffic_imd_total",
+        "IMD_pesado": "traffic_imd_pesado",
+    }
+    traffic = traffic.rename(columns={key: value for key, value in rename_map.items() if key in traffic.columns})
+    for column in ["traffic_route_name", "traffic_length_km", "traffic_imd_total", "traffic_imd_pesado"]:
+        if column not in traffic.columns:
+            traffic[column] = np.nan if column != "traffic_route_name" else ""
+
+    traffic["traffic_length_km"] = pd.to_numeric(traffic["traffic_length_km"], errors="coerce").fillna(0.0)
+    traffic["traffic_imd_total"] = pd.to_numeric(traffic["traffic_imd_total"], errors="coerce").fillna(0.0)
+    traffic["traffic_imd_pesado"] = pd.to_numeric(traffic["traffic_imd_pesado"], errors="coerce").fillna(0.0)
+    return traffic[
+        ["traffic_route_name", "traffic_length_km", "traffic_imd_total", "traffic_imd_pesado", "geometry"]
+    ].dropna(subset=["geometry"])
+
+
+def summarize_traffic_by_route(
+    roads_gdf: gpd.GeoDataFrame,
+    traffic_gdf: gpd.GeoDataFrame,
+    max_distance_km: float = 5.0,
+) -> pd.DataFrame:
+    if traffic_gdf is None or traffic_gdf.empty:
+        return pd.DataFrame(
+            columns=["carretera", "traffic_imd_total", "traffic_imd_pesado", "traffic_heavy_share", "traffic_match_count"]
+        )
+
+    roads_metric = _roads_for_matching(roads_gdf)
+    traffic_metric = traffic_gdf.to_crs("EPSG:3857")
+    matched = gpd.sjoin_nearest(
+        traffic_metric,
+        roads_metric,
+        how="left",
+        distance_col="distance_to_route_m",
+    )
+    matched["distance_to_route_km"] = matched["distance_to_route_m"] / 1000.0
+    matched = matched[matched["distance_to_route_km"] <= max_distance_km].copy()
+    if matched.empty:
+        return pd.DataFrame(
+            columns=["carretera", "traffic_imd_total", "traffic_imd_pesado", "traffic_heavy_share", "traffic_match_count"]
+        )
+
+    matched["traffic_weight"] = matched["traffic_length_km"].replace(0, np.nan).fillna(1.0)
+    grouped = (
+        matched.groupby("carretera", as_index=False)
+        .apply(
+            lambda group: pd.Series(
+                {
+                    "traffic_imd_total": float(np.average(group["traffic_imd_total"], weights=group["traffic_weight"])),
+                    "traffic_imd_pesado": float(np.average(group["traffic_imd_pesado"], weights=group["traffic_weight"])),
+                    "traffic_match_count": int(len(group)),
+                }
+            )
+        )
+        .reset_index(drop=True)
+    )
+    grouped["traffic_heavy_share"] = np.where(
+        grouped["traffic_imd_total"] > 0,
+        grouped["traffic_imd_pesado"] / grouped["traffic_imd_total"],
+        0.0,
+    )
+    return grouped
+
+
+def build_mitma_traffic_inputs(
+    roads_gdf: gpd.GeoDataFrame,
+    traffic_geojson_path: Path,
+    summary_output_path: Path,
+    max_distance_km: float = 5.0,
+) -> Dict[str, object]:
+    traffic_gdf = load_mitma_traffic_segments(traffic_geojson_path)
+    by_route = summarize_traffic_by_route(roads_gdf, traffic_gdf, max_distance_km=max_distance_km)
+    summary_output_path.parent.mkdir(parents=True, exist_ok=True)
+    by_route.to_csv(summary_output_path, index=False)
+    return {"traffic_segments": traffic_gdf, "by_route": by_route}
+
+
+def enrich_route_summary_with_traffic(route_summary: pd.DataFrame, traffic_by_route: pd.DataFrame) -> pd.DataFrame:
+    enriched = route_summary.copy()
+    for column in ["traffic_imd_total", "traffic_imd_pesado", "traffic_heavy_share"]:
+        if column not in enriched.columns:
+            enriched[column] = 0.0
+    if "traffic_match_count" not in enriched.columns:
+        enriched["traffic_match_count"] = 0
+    if traffic_by_route is None or traffic_by_route.empty:
+        return enriched
+
+    grouped = traffic_by_route.rename(
+        columns={
+            "traffic_imd_total": "traffic_imd_total_new",
+            "traffic_imd_pesado": "traffic_imd_pesado_new",
+            "traffic_heavy_share": "traffic_heavy_share_new",
+            "traffic_match_count": "traffic_match_count_new",
+        }
+    )
+    enriched = enriched.merge(grouped, how="left", on="carretera")
+    enriched["traffic_imd_total"] = enriched["traffic_imd_total_new"].fillna(enriched["traffic_imd_total"]).fillna(0.0)
+    enriched["traffic_imd_pesado"] = enriched["traffic_imd_pesado_new"].fillna(enriched["traffic_imd_pesado"]).fillna(0.0)
+    enriched["traffic_heavy_share"] = enriched["traffic_heavy_share_new"].fillna(enriched["traffic_heavy_share"]).fillna(0.0)
+    enriched["traffic_match_count"] = (
+        enriched["traffic_match_count_new"].fillna(enriched["traffic_match_count"]).fillna(0).astype(int)
+    )
+    enriched = enriched.drop(
+        columns=[
+            "traffic_imd_total_new",
+            "traffic_imd_pesado_new",
+            "traffic_heavy_share_new",
+            "traffic_match_count_new",
+        ],
+        errors="ignore",
+    )
+    return enriched
+
+
+def parse_geoportal_gasolineras_xls(xls_path: Path) -> pd.DataFrame:
+    if not xls_path.exists():
+        return pd.DataFrame(
+            columns=[
+                "provincia",
+                "municipio",
+                "localidad",
+                "codigo_postal",
+                "direccion",
+                "margen",
+                "longitude",
+                "latitude",
+                "rotulo",
+                "tipo_venta",
+                "rem",
+                "horario",
+                "tipo_servicio",
+                "source_dataset",
+            ]
+        )
+
+    raw = pd.read_excel(xls_path, header=3)
+    rename_map = {
+        "Provincia": "provincia",
+        "Municipio": "municipio",
+        "Localidad": "localidad",
+        "Código postal": "codigo_postal",
+        "Dirección": "direccion",
+        "Margen": "margen",
+        "Longitud": "longitude",
+        "Latitud": "latitude",
+        "Rótulo": "rotulo",
+        "Tipo venta": "tipo_venta",
+        "Rem.": "rem",
+        "Horario": "horario",
+        "Tipo servicio": "tipo_servicio",
+    }
+    stations = raw.rename(columns={key: value for key, value in rename_map.items() if key in raw.columns}).copy()
+    for column in rename_map.values():
+        if column not in stations.columns:
+            stations[column] = np.nan
+    stations["longitude"] = pd.to_numeric(stations["longitude"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    stations["latitude"] = pd.to_numeric(stations["latitude"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    stations = stations.dropna(subset=["longitude", "latitude"]).copy()
+    stations["source_dataset"] = "Geoportal Gasolineras"
+    return stations[
+        [
+            "provincia",
+            "municipio",
+            "localidad",
+            "codigo_postal",
+            "direccion",
+            "margen",
+            "longitude",
+            "latitude",
+            "rotulo",
+            "tipo_venta",
+            "rem",
+            "horario",
+            "tipo_servicio",
+            "source_dataset",
+        ]
+    ].reset_index(drop=True)
+
+
+def parse_geoportal_gasolineras_json(json_path: Path) -> pd.DataFrame:
+    empty = pd.DataFrame(
+        columns=[
+            "provincia",
+            "municipio",
+            "localidad",
+            "codigo_postal",
+            "direccion",
+            "margen",
+            "longitude",
+            "latitude",
+            "rotulo",
+            "tipo_venta",
+            "rem",
+            "horario",
+            "tipo_servicio",
+            "source_dataset",
+        ]
+    )
+    if not json_path.exists():
+        return empty
+
+    payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    rows = payload.get("ListaEESSPrecio", [])
+    if not rows:
+        return empty
+    stations = pd.DataFrame(rows)
+    rename_map = {
+        "Provincia": "provincia",
+        "Municipio": "municipio",
+        "Localidad": "localidad",
+        "C.P.": "codigo_postal",
+        "Dirección": "direccion",
+        "Margen": "margen",
+        "Longitud (WGS84)": "longitude",
+        "Latitud": "latitude",
+        "Rótulo": "rotulo",
+        "Tipo Venta": "tipo_venta",
+        "Remisión": "rem",
+        "Horario": "horario",
+        "Tipo Servicio": "tipo_servicio",
+        "IDMunicipio": "municipality_id",
+    }
+    stations = stations.rename(columns={key: value for key, value in rename_map.items() if key in stations.columns}).copy()
+    for column in rename_map.values():
+        if column not in stations.columns:
+            stations[column] = np.nan
+    stations["longitude"] = pd.to_numeric(stations["longitude"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    stations["latitude"] = pd.to_numeric(stations["latitude"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    stations = stations.dropna(subset=["longitude", "latitude"]).copy()
+    stations["source_dataset"] = "MITERD REST Carburantes"
+    return stations[
+        [
+            "provincia",
+            "municipio",
+            "localidad",
+            "codigo_postal",
+            "direccion",
+            "margen",
+            "longitude",
+            "latitude",
+            "rotulo",
+            "tipo_venta",
+            "rem",
+            "horario",
+            "tipo_servicio",
+            "municipality_id",
+            "source_dataset",
+        ]
+    ].reset_index(drop=True)
+
+
+def parse_ine_municipal_population_json(json_path: Path, target_year: int = 2025) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["municipality_code", "municipality_name", "population_year", "municipal_population"])
+    if not json_path.exists():
+        return empty
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return empty
+    if not isinstance(payload, list):
+        return empty
+
+    rows: List[Dict[str, object]] = []
+    year_str = str(target_year)
+    for item in payload:
+        name = str(item.get("Nombre", ""))
+        if ", " not in name:
+            continue
+        place_label, sex_label = name.rsplit(", ", 1)
+        if sex_label.strip().lower() != "total":
+            continue
+        if place_label.strip().lower().startswith("national total"):
+            continue
+
+        match = re.match(r"(?P<code>\d{5})\s+(?P<name>.+)", place_label.strip())
+        if not match:
+            continue
+
+        values = item.get("Data", [])
+        population_value = None
+        for observation in values:
+            if str(observation.get("NombrePeriodo", "")) == year_str:
+                population_value = observation.get("Valor")
+                break
+        if population_value in (None, ""):
+            continue
+        rows.append(
+            {
+                "municipality_code": match.group("code"),
+                "municipality_name": match.group("name").strip(),
+                "population_year": target_year,
+                "municipal_population": float(population_value),
+            }
+        )
+
+    if not rows:
+        return empty
+    return pd.DataFrame(rows).drop_duplicates(subset=["municipality_code"]).reset_index(drop=True)
+
+
+def _normalize_lookup_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or ""))
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+    normalized = re.sub(r"[^A-Z0-9]+", " ", normalized.upper()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def parse_ine_provincial_overnight_stays_json(
+    json_path: Path,
+    target_year: Optional[int] = None,
+) -> pd.DataFrame:
+    empty = pd.DataFrame(columns=["province_name", "tourism_year", "provincial_overnight_stays"])
+    if not json_path.exists():
+        return empty
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return empty
+    if not isinstance(payload, list):
+        return empty
+
+    rows: List[Dict[str, object]] = []
+    for item in payload:
+        name = str(item.get("Nombre", "")).strip()
+        match = re.match(r"Overnight stays\. Total\. (?P<province>.+?)\. Base data\.", name)
+        if not match:
+            continue
+        province_name = match.group("province").strip()
+        if province_name.lower() == "national total":
+            continue
+
+        observations = item.get("Data", [])
+        candidate_values = [
+            (int(observation.get("Anyo", 0)), observation.get("Valor"))
+            for observation in observations
+            if observation.get("Valor") not in (None, "")
+        ]
+        if target_year is not None:
+            candidate_values = [entry for entry in candidate_values if entry[0] == int(target_year)]
+        if not candidate_values:
+            continue
+
+        tourism_year, tourism_value = max(candidate_values, key=lambda entry: entry[0])
+        rows.append(
+            {
+                "province_name": province_name,
+                "tourism_year": int(tourism_year),
+                "provincial_overnight_stays": float(tourism_value),
+            }
+        )
+
+    if not rows:
+        return empty
+    return pd.DataFrame(rows).drop_duplicates(subset=["province_name"]).reset_index(drop=True)
+
+
+def build_geoportal_gasolineras_baseline(
+    roads_gdf: gpd.GeoDataFrame,
+    source_path: Path,
+    matched_output_path: Optional[Path] = None,
+    max_distance_km: float = 8.0,
+) -> pd.DataFrame:
+    if source_path.suffix.lower() == ".json":
+        stations = parse_geoportal_gasolineras_json(source_path)
+    else:
+        stations = parse_geoportal_gasolineras_xls(source_path)
+    matched = spatially_match_chargers_to_roads(stations, roads_gdf, max_distance_km=max_distance_km)
+    if matched_output_path is not None:
+        matched_output_path.parent.mkdir(parents=True, exist_ok=True)
+        matched.to_csv(matched_output_path, index=False)
+    return matched
 
 
 def _monthly_ev_count_from_remote_parquet(year: int, month: int) -> int:
@@ -616,6 +1061,16 @@ def try_build_official_external_inputs(
     baseline_matched_path = external_dir / "existing_interurban_stations_matched.csv"
     baseline_scalar_path = external_dir / "existing_interurban_stations.csv"
     nap_xml_path = external_dir / "nap_charging_points.xml"
+    traffic_geojson_path = external_dir / "mitma_traffic_segments.geojson"
+    traffic_summary_path = external_dir / "mitma_traffic_by_route.csv"
+    gasolineras_json_path = external_dir / "miterd_estaciones_terrestres.json"
+    gasolineras_xls_path = external_dir / "geoportal_gasolineras_eess.xls"
+    gasolineras_matched_path = external_dir / "geoportal_gasolineras_matched.csv"
+    ine_population_json_path = external_dir / "ine_municipal_population_2025.json"
+    ine_population_csv_path = external_dir / "ine_municipal_population_2025.csv"
+    ine_hotel_overnight_json_path = external_dir / "ine_hotel_overnight_stays.json"
+    ine_provincial_overnight_json_path = external_dir / "ine_provincial_overnight_stays.json"
+    ine_provincial_overnight_csv_path = external_dir / "ine_provincial_overnight_stays.csv"
 
     if not baseline_summary_path.exists() or not baseline_scalar_path.exists():
         if not nap_xml_path.exists():
@@ -659,9 +1114,91 @@ def try_build_official_external_inputs(
         except (requests.RequestException, ValueError):
             pass
 
+    if not traffic_summary_path.exists():
+        if not traffic_geojson_path.exists():
+            try:
+                downloaded_traffic_path = download_arcgis_geojson_paginated(
+                    DEFAULT_MITMA_TRAFFIC_URL,
+                    traffic_geojson_path,
+                    out_fields=["ID", "Nombre", "Longitud", "IMD_total", "IMD_pesado"],
+                )
+                traffic_geojson_path = downloaded_traffic_path
+            except (requests.RequestException, ValueError, KeyError, json.JSONDecodeError):
+                pass
+        if traffic_geojson_path.exists():
+            build_mitma_traffic_inputs(
+                roads_gdf,
+                traffic_geojson_path,
+                traffic_summary_path,
+            )
+
+    if not gasolineras_json_path.exists() and not gasolineras_matched_path.exists():
+        try:
+            download_file(DEFAULT_GASOLINERAS_JSON_URL, gasolineras_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+
+    if not gasolineras_matched_path.exists():
+        try:
+            if gasolineras_json_path.exists():
+                build_geoportal_gasolineras_baseline(
+                    roads_gdf,
+                    gasolineras_json_path,
+                    matched_output_path=gasolineras_matched_path,
+                    max_distance_km=8.0,
+                )
+            elif gasolineras_xls_path.exists():
+                build_geoportal_gasolineras_baseline(
+                    roads_gdf,
+                    gasolineras_xls_path,
+                    matched_output_path=gasolineras_matched_path,
+                    max_distance_km=8.0,
+                )
+        except (ValueError, ImportError):
+            pass
+
+    if not ine_population_json_path.exists() and not ine_population_csv_path.exists():
+        try:
+            download_file(DEFAULT_INE_MUNICIPAL_POP_URL, ine_population_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if ine_population_json_path.exists() and not ine_population_csv_path.exists():
+        try:
+            ine_population = parse_ine_municipal_population_json(ine_population_json_path, target_year=2025)
+            ine_population_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            ine_population.to_csv(ine_population_csv_path, index=False)
+        except json.JSONDecodeError:
+            pass
+
+    if not ine_hotel_overnight_json_path.exists():
+        try:
+            download_file(DEFAULT_INE_HOTEL_OVERNIGHT_URL, ine_hotel_overnight_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if not ine_provincial_overnight_json_path.exists() and not ine_provincial_overnight_csv_path.exists():
+        try:
+            download_file(DEFAULT_INE_PROVINCIAL_OVERNIGHT_URL, ine_provincial_overnight_json_path)
+        except (requests.RequestException, ValueError):
+            pass
+    if ine_provincial_overnight_json_path.exists() and not ine_provincial_overnight_csv_path.exists():
+        try:
+            tourism = parse_ine_provincial_overnight_stays_json(ine_provincial_overnight_json_path)
+            ine_provincial_overnight_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            tourism.to_csv(ine_provincial_overnight_csv_path, index=False)
+        except json.JSONDecodeError:
+            pass
+
     return {
         "baseline_summary_path": baseline_summary_path,
         "baseline_scalar_path": baseline_scalar_path,
         "ev_projection_path": projection_path,
+        "traffic_summary_path": traffic_summary_path,
+        "gasolineras_json_path": gasolineras_json_path,
+        "gasolineras_matched_path": gasolineras_matched_path,
+        "ine_population_json_path": ine_population_json_path,
+        "ine_population_csv_path": ine_population_csv_path,
+        "ine_hotel_overnight_json_path": ine_hotel_overnight_json_path,
+        "ine_provincial_overnight_json_path": ine_provincial_overnight_json_path,
+        "ine_provincial_overnight_csv_path": ine_provincial_overnight_csv_path,
         "grid_capacity_paths": [path for path in [edistrib_path, ide_path] if path.exists()],
     }

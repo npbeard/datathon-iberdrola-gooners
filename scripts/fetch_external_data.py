@@ -31,6 +31,12 @@ def main() -> None:
     print("Official external inputs cached.")
     print(f"Baseline summary: {result['baseline_summary_path']}")
     print(f"EV projection: {result['ev_projection_path']}")
+    print(f"Traffic summary: {result.get('traffic_summary_path', 'not generated')}")
+    print(f"Gas stations raw: {result.get('gasolineras_json_path', 'not generated')}")
+    print(f"Gas stations matched: {result.get('gasolineras_matched_path', 'not generated')}")
+    print(f"INE municipal population: {result.get('ine_population_csv_path', 'not generated')}")
+    print(f"INE hotel overnight stays: {result.get('ine_hotel_overnight_json_path', 'not generated')}")
+    print(f"INE provincial overnight stays: {result.get('ine_provincial_overnight_csv_path', 'not generated')}")
     print(f"Grid files detected: {len(result['grid_capacity_paths'])}")
     print(f"Standardized grid nodes available: {len(grid_nodes)}")
 

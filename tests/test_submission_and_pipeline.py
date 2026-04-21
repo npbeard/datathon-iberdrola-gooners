@@ -226,7 +226,15 @@ def test_generate_submission_helpers_and_main(tmp_path, monkeypatch):
     assert gsp._geometry_to_lines(None) == []
     assert gsp._map_bounds(pd.DataFrame(columns=FILE_2_COLUMNS), [])["minLon"] == -9.5
 
-    gsp.save_assumptions_note(tmp_path, "loaded:x.csv", "missing:y.csv", "loaded:grid.csv", "loaded:business.csv", 120)
+    gsp.save_assumptions_note(
+        tmp_path,
+        "loaded:x.csv",
+        "missing:y.csv",
+        "loaded:grid.csv",
+        "loaded:business.csv",
+        "loaded:traffic.csv",
+        120,
+    )
     assert "120" in (tmp_path / "ASSUMPTIONS.md").read_text(encoding="utf-8")
 
     root = tmp_path / "repo"
@@ -314,6 +322,7 @@ def test_generate_submission_branch_helpers():
             "total_length_km": 500.0,
             "pk_span_km": 500.0,
             "route_hierarchy_score": 0.65,
+            "traffic_imd_total": 30000.0,
         }
     )
     assert gsp._dynamic_spacing_km(low_need_row, 120) > 120
@@ -378,7 +387,7 @@ def test_generate_submission_branch_helpers():
 def test_business_context_edge_cases(tmp_path):
     missing_context, missing_status = gsp.load_business_context(tmp_path)
     assert missing_context.empty
-    assert missing_status == "missing:existing_interurban_stations_matched.csv"
+    assert missing_status == "missing:existing_interurban_stations_matched.csv+geoportal_gasolineras_matched.csv"
 
     matched_path = tmp_path / "existing_interurban_stations_matched.csv"
     pd.DataFrame(columns=["site_name", "latitude", "longitude"]).to_csv(matched_path, index=False)
@@ -418,6 +427,60 @@ def test_business_context_edge_cases(tmp_path):
     assert loaded_status == "loaded:existing_interurban_stations_matched.csv"
     assert no_route_context.loc[0, "route_segment"] == ""
     assert gsp._business_signal_for_point(40.0, -3.0, "A-9", None) == 0.0
+
+    gas_path = tmp_path / "geoportal_gasolineras_matched.csv"
+    population_path = tmp_path / "ine_municipal_population_2025.csv"
+    tourism_path = tmp_path / "ine_provincial_overnight_stays.csv"
+    pd.DataFrame(
+        [{"municipality_code": "28079", "municipality_name": "MADRID", "population_year": 2025, "municipal_population": 3305408.0}]
+    ).to_csv(population_path, index=False)
+    pd.DataFrame(
+        [{"province_name": "Madrid", "tourism_year": 2024, "provincial_overnight_stays": 23500000.0}]
+    ).to_csv(tourism_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "latitude": 40.1,
+                "longitude": -3.1,
+                "carretera": "A-2",
+                "provincia": "Madrid",
+                "municipality_id": "",
+                "municipio": "Madrid",
+                "is_interurban_match": True,
+                "distance_to_route_km": 1.0,
+                "tipo_venta": "P",
+                "horario": "L-D: 24H",
+                "tipo_servicio": "L-D: 24H (A)",
+            }
+        ]
+    ).to_csv(gas_path, index=False)
+    combined_context, combined_status = gsp.load_business_context(tmp_path)
+    assert "loaded:geoportal_gasolineras_matched.csv" in combined_status
+    assert "loaded:ine_municipal_population_2025.csv" in combined_status
+    assert "loaded:ine_provincial_overnight_stays.csv" in combined_status
+    assert (combined_context["business_score"] > 0).any()
+    assert (combined_context["municipal_population"] > 0).any()
+    assert (combined_context["tourism_overnight_stays"] > 0).any()
+
+    pd.DataFrame(columns=["latitude", "longitude"]).to_csv(gas_path, index=False)
+    empty_gas_context, empty_gas_status = gsp.load_business_context(tmp_path)
+    assert "empty:geoportal_gasolineras_matched.csv" in empty_gas_status
+    assert not empty_gas_context.empty
+
+    pd.DataFrame(
+        [
+            {
+                "latitude": 40.1,
+                "longitude": -3.1,
+                "carretera": "A-2",
+                "is_interurban_match": False,
+                "distance_to_route_km": 20.0,
+            }
+        ]
+    ).to_csv(gas_path, index=False)
+    filtered_gas_context, filtered_gas_status = gsp.load_business_context(tmp_path)
+    assert "no_business_matches:geoportal_gasolineras_matched.csv" in filtered_gas_status
+    assert not filtered_gas_context.empty
 
     deduped = gsp.deduplicate_station_rows(
         pd.DataFrame(
@@ -876,6 +939,12 @@ datasets: {}
     pd.DataFrame([{"total_ev_projected_2027": 777777}]).to_csv(
         root / "data" / "external" / "ev_projection_2027.csv", index=False
     )
+    pd.DataFrame([{"carretera": "A-1", "traffic_imd_total": 15000, "traffic_imd_pesado": 1800, "traffic_heavy_share": 0.12, "traffic_match_count": 2}]).to_csv(
+        root / "data" / "external" / "mitma_traffic_by_route.csv", index=False
+    )
+    pd.DataFrame([{"municipality_code": "28079", "municipality_name": "MADRID", "population_year": 2025, "municipal_population": 3305408.0}]).to_csv(
+        root / "data" / "external" / "ine_municipal_population_2025.csv", index=False
+    )
     pd.DataFrame(
         [
             {
@@ -915,6 +984,7 @@ datasets: {}
     gsp.main()
     assumptions = (root / "data" / "submission" / "ASSUMPTIONS.md").read_text(encoding="utf-8")
     assert "loaded:grid_capacity_files" in assumptions
+    assert "loaded:mitma_traffic_by_route.csv" in assumptions
     missing_baseline = gsp.load_external_route_baseline(root / "missing-external")
     assert missing_baseline[0].empty
     assert missing_baseline[1] == 0
@@ -931,6 +1001,7 @@ datasets: {}
     assert not business_context.empty
     route_with_business = gsp.enrich_route_summary_with_business(gsp.summarize_routes(roads), business_context)
     assert "business_support_score" in route_with_business.columns
+    assert "market_access_population" in route_with_business.columns
 
 
 def test_offline_explorer_additional_branches(tmp_path, monkeypatch):
@@ -947,6 +1018,9 @@ def test_offline_explorer_additional_branches(tmp_path, monkeypatch):
     )
     pd.DataFrame([{"carretera": "A-1", "existing_station_count": 1}]).to_csv(
         root / "data" / "external" / "existing_interurban_stations_by_route.csv", index=False
+    )
+    pd.DataFrame([{"carretera": "A-1", "traffic_imd_total": 15000, "traffic_imd_pesado": 1800, "traffic_heavy_share": 0.12, "traffic_match_count": 1}]).to_csv(
+        root / "data" / "external" / "mitma_traffic_by_route.csv", index=False
     )
 
     monkeypatch.setattr(boe, "ROOT", root)
