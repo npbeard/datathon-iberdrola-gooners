@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+env/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# Data
+/data/raw/
+/data/processed/
+/data/external/*.xml
+/data/external/*.xlsx
+/data/external/*.xls
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large generated artifacts kept locally but not versioned
+maps/density_heatmap.html
+
+# OS
+.DS_Store
+
+# Local IDE / tooling artifacts
+anaconda_projects/

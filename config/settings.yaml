@@ -1,0 +1,57 @@
+datasets:
+  roads_rtig:
+    name: rutas_rtig_carreteras
+    base_url: "https://mapas.fomento.gob.es/arcgis2/rest/services/Hermes/0_CARRETERAS/MapServer/19/query"
+    where: "GEOM is not null"
+    out_fields: "*"
+    f: "json"
+    result_record_count: 500
+    geometry_precision: 6
+    source_crs: "EPSG:3857"
+  charging_points_nap:
+    url: "https://infocar.dgt.es/datex2/v3/miterd/EnergyInfrastructureTablePublication/electrolineras.xml"
+    raw_path: "data/external/nap_charging_points.xml"
+    matched_output: "data/external/existing_interurban_stations_matched.csv"
+    route_summary_output: "data/external/existing_interurban_stations_by_route.csv"
+  ev_forecast_official:
+    repo_base_url: "https://raw.githubusercontent.com/Admindatosgobes/Laboratorio-de-Datos/main/Data%20Science/Ruta%20a%20la%20electrificaci%C3%B3n%20de%20la%20Movilidad/Datos/"
+    monthly_history_output: "data/external/ev_monthly_counts_official.csv"
+    projection_output: "data/external/ev_projection_2027.csv"
+  traffic_intensity_mitma:
+    url: "https://mapas.fomento.gob.es/arcgis/rest/services/MapaTrafico/Mapa2019web/MapServer/2/query"
+    raw_path: "data/external/mitma_traffic_segments.geojson"
+    route_summary_output: "data/external/mitma_traffic_by_route.csv"
+  geoportal_gasolineras:
+    url: "https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/"
+    raw_path: "data/external/miterd_estaciones_terrestres.json"
+    matched_output: "data/external/geoportal_gasolineras_matched.csv"
+    fallback_xls_url: "https://geoportalgasolineras.es/resources/files/preciosEESS_es.xls"
+    fallback_xls_path: "data/external/geoportal_gasolineras_eess.xls"
+  ine_municipal_population:
+    url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/78750"
+    raw_path: "data/external/ine_municipal_population_2025.json"
+    processed_output: "data/external/ine_municipal_population_2025.csv"
+  ine_tourism_overnight_stays:
+    hotel_url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/2039"
+    hotel_raw_path: "data/external/ine_hotel_overnight_stays.json"
+    provincial_url: "https://servicios.ine.es/wstempus/js/en/DATOS_TABLA/48427"
+    provincial_raw_path: "data/external/ine_provincial_overnight_stays.json"
+    provincial_processed_output: "data/external/ine_provincial_overnight_stays.csv"
+  grid_capacity_endesa:
+    url: "https://www.edistribucion.com/content/dam/edistribucion/conexion-a-la-red/descargables/nodos/demanda/202603/2026_03_04_R1299_demanda.csv"
+    local_path: "data/external/edistribucion_capacity_2026_03.csv"
+  grid_capacity_ide:
+    url: "https://www.i-de.es/documents/d/guest/2026_02_04_r1-001_demanda"
+    local_path: "data/external/ide_capacity_2026_02.csv"
+
+datathon:
+  target_year: 2027
+  charger_power_kw: 150
+  station_spacing_km: 120
+  min_route_span_km: 80
+  baseline_match_distance_km: 5
+  grid_match_distance_km: 35
+  baseline_existing_stations_default: 0
+  total_ev_projected_2027_default: 400000
+  output_dir: "data/submission"
+  map_output: "maps/proposed_charging_network.html"
