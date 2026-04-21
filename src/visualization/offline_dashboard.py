@@ -515,6 +515,7 @@ def build_offline_dashboard(
     recommendation_section = ""
     story_section = ""
     analytics_sections = ""
+    sidebar_section = ""
     main_class = "main"
     map_note_secondary = "Click a route row or station marker to inspect that corridor in detail."
 
@@ -522,6 +523,25 @@ def build_offline_dashboard(
         main_class = "main map-only"
         map_note_secondary = "Use the filters to inspect the proposed network by status, distributor, or corridor."
     else:
+        sidebar_section = """
+      <aside class="sidebar">
+        <article class="card">
+          <p class="eyebrow">Selected Site</p>
+          <div id="stationAction"></div>
+          <h2 id="stationTitle" style="margin-top: 10px;">Select a station</h2>
+          <p id="stationNarrative" class="muted" style="margin-top: 8px;">The detail panel updates when you hover or click a point on the map.</p>
+          <div class="detail-grid" id="stationDetails" style="margin-top: 16px;"></div>
+          <div class="reason-list" id="stationWhy"></div>
+        </article>
+
+        <article class="card">
+          <p class="eyebrow">Route Spotlight</p>
+          <h2 id="routeTitle">Highest-priority corridors</h2>
+          <p id="routeNarrative" class="muted">Rows below combine planned station density with route-level service need, friction exposure, and corridor relevance.</p>
+          <div class="chip-line" id="spotlightChips"></div>
+        </article>
+      </aside>
+"""
         hero_section = """
     <section class="hero">
       <article class="card hero-card">
@@ -1332,25 +1352,7 @@ def build_offline_dashboard(
         </div>
       </article>
 
-      {"<aside class=\"sidebar\">" if not map_only else ""}
-      {"""
-        <article class="card">
-          <p class="eyebrow">Selected Site</p>
-          <div id="stationAction"></div>
-          <h2 id="stationTitle" style="margin-top: 10px;">Select a station</h2>
-          <p id="stationNarrative" class="muted" style="margin-top: 8px;">The detail panel updates when you hover or click a point on the map.</p>
-          <div class="detail-grid" id="stationDetails" style="margin-top: 16px;"></div>
-          <div class="reason-list" id="stationWhy"></div>
-        </article>
-
-        <article class="card">
-          <p class="eyebrow">Route Spotlight</p>
-          <h2 id="routeTitle">Highest-priority corridors</h2>
-          <p id="routeNarrative" class="muted">Rows below combine planned station density with route-level service need, friction exposure, and corridor relevance.</p>
-          <div class="chip-line" id="spotlightChips"></div>
-        </article>
-      """ if not map_only else ""}
-      {"</aside>" if not map_only else ""}
+{sidebar_section}
     </section>
 {analytics_sections}
   </div>
