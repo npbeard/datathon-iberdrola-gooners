@@ -268,7 +268,6 @@
       flex: 1 1 220px;
     }
     .map-wrap {
-      position: relative;
       overflow: hidden;
       border-radius: 22px;
       border: 1px solid rgba(34,49,66,0.10);
@@ -281,15 +280,10 @@
       height: auto;
       display: block;
     }
-    .map-overlay {
-      position: absolute;
-      top: 16px;
-      left: 16px;
-      display: grid;
-      gap: 10px;
-      max-width: 300px;
-      z-index: 2;
-      pointer-events: none;
+    .map-legend-row {
+      display: flex;
+      justify-content: flex-start;
+      margin: 14px 0 12px;
     }
     .legend-card {
       background: rgba(255,253,248,0.92);
@@ -298,6 +292,7 @@
       padding: 12px 14px;
       box-shadow: 0 12px 30px rgba(34,49,66,0.08);
       backdrop-filter: blur(6px);
+      max-width: 300px;
     }
     .legend-row {
       display: flex;
@@ -687,17 +682,17 @@
           <select class="select" id="distributorFilter"></select>
           <input class="search" id="routeSearch" type="search" placeholder="Filter by route, e.g. A-7 or AP-7N">
         </div>
-        <div class="map-wrap">
-          <div class="map-overlay">
-            <div class="legend-card">
-              <p class="eyebrow" style="margin-bottom:6px;">Visual Legend</p>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--sufficient);"></span>Green: build now</div>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--moderate);"></span>Yellow: phase next</div>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--congested);"></span>Red: reinforce first</div>
-              <div class="legend-size"><span style="width:10px;height:10px;"></span>smaller site</div>
-              <div class="legend-size"><span style="width:18px;height:18px;"></span>larger site</div>
-            </div>
+        <div class="map-legend-row">
+          <div class="legend-card">
+            <p class="eyebrow" style="margin-bottom:6px;">Visual Legend</p>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--sufficient);"></span>Green: build now</div>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--moderate);"></span>Yellow: phase next</div>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--congested);"></span>Red: reinforce first</div>
+            <div class="legend-size"><span style="width:10px;height:10px;"></span>smaller site</div>
+            <div class="legend-size"><span style="width:18px;height:18px;"></span>larger site</div>
           </div>
+        </div>
+        <div class="map-wrap">
           <svg id="networkMap" viewBox="0 0 980 680" role="img" aria-label="Map of Spain with proposed charging stations"></svg>
         </div>
         <div class="map-note">
