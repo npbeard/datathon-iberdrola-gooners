@@ -373,6 +373,23 @@ def _assumption_cards() -> List[Dict[str, str]]:
     ]
 
 
+def _business_score_cards() -> List[Dict[str, str]]:
+    return [
+        {
+            "title": "Roadside anchor quality",
+            "body": "We score nearby stop anchors such as food, lodging, fuel, parking, retail, and service-area signals. Stronger roadside ecosystems contribute more than isolated points.",
+        },
+        {
+            "title": "Population and tourism lift",
+            "body": "The score is strengthened with public demand proxies, especially market-access population and provincial overnight stays, so routes with stronger stop economics receive more support.",
+        },
+        {
+            "title": "Closer anchors matter more",
+            "body": "At the station level, candidate points near the target spacing position get more credit when the strongest anchors are closest, so the final site favors a more natural stop environment.",
+        },
+    ]
+
+
 def build_offline_dashboard(
     file_1: pd.DataFrame,
     stations_df: pd.DataFrame,
@@ -383,6 +400,7 @@ def build_offline_dashboard(
     title: str = "Iberdrola Interurban Charging Network Dashboard",
     embed_explorer: bool = False,
     explorer_path: str = "offline_scenario_explorer.html",
+    map_only: bool = False,
 ) -> None:
     """Render a winning-oriented, offline-safe dashboard to a single HTML file."""
 
@@ -397,6 +415,7 @@ def build_offline_dashboard(
     friction_payload = _friction_summary(file_3)
     source_cards = _source_cards()
     assumption_cards = _assumption_cards()
+    business_score_cards = _business_score_cards()
 
     file_1_row = file_1.iloc[0].to_dict() if not file_1.empty else {}
     total_chargers = int(stations_df["n_chargers_proposed"].sum()) if not stations_df.empty else 0
@@ -463,9 +482,19 @@ def build_offline_dashboard(
         """
         for card in assumption_cards
     )
+    business_score_cards_html = "".join(
+        f"""
+          <article class="source-card">
+            <p class="source-owner">Business Score</p>
+            <h3>{card["title"]}</h3>
+            <p>{card["body"]}</p>
+          </article>
+        """
+        for card in business_score_cards
+    )
 
     explorer_section = ""
-    if embed_explorer:
+    if embed_explorer and not map_only:
         explorer_section = f"""
     <section class="analytics">
       <article class="card" style="grid-column: 1 / -1;">
@@ -479,6 +508,210 @@ def build_offline_dashboard(
       </article>
     </section>
 """
+
+    hero_section = ""
+    impact_section = ""
+    recommendation_section = ""
+    story_section = ""
+    analytics_sections = ""
+    main_class = "main"
+    map_note_secondary = "Click a route row or station marker to inspect that corridor in detail."
+
+    if map_only:
+        main_class = "main map-only"
+        map_note_secondary = "Use the filters to inspect the proposed network by status, distributor, or corridor."
+    else:
+        hero_section = """
+    <section class="hero">
+      <article class="card hero-card">
+        <p class="eyebrow">IE Sustainability Datathon 2026 · Deliverable 3</p>
+        <h1>Our 2027 interurban charging rollout proposal for Iberdrola.</h1>
+        <p class="lead">This dashboard is built to defend the placement logic behind the network, not just display points on a map. It combines corridor need, current charging scarcity, 2027 EV demand, stop quality, and grid feasibility into a phased rollout strategy.</p>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="label">Proposed Sites</div><div class="value" id="metricSites">0</div><div class="sub">File 2 footprint</div></div>
+          <div class="kpi"><div class="label">Total Chargers</div><div class="value" id="metricChargers">0</div><div class="sub">Installed points proposed</div></div>
+          <div class="kpi"><div class="label">Friction Points</div><div class="value" id="metricFriction">0</div><div class="sub">File 3 bottlenecks</div></div>
+          <div class="kpi"><div class="label">Existing Baseline</div><div class="value" id="metricBaseline">0</div><div class="sub">Official interurban context</div></div>
+          <div class="kpi"><div class="label">Projected EV 2027</div><div class="value" id="metricEV">0</div><div class="sub">Mandatory forecast anchor</div></div>
+          <div class="kpi"><div class="label">Covered Corridors</div><div class="value" id="metricRoutes">0</div><div class="sub">Distinct route segments</div></div>
+        </div>
+      </article>
+      <aside class="card">
+        <p class="eyebrow">How To Read The Map</p>
+        <div class="guide-list">
+          <div class="guide-item">
+            <strong>Colors explain buildability, not demand.</strong>
+            Green means the nearest published grid node looks comfortable. Yellow means phased deployment. Red means reinforce first.
+          </div>
+          <div class="guide-item">
+            <strong>Marker size shows station scale.</strong>
+            Larger dots represent sites with more chargers, so spatial importance is visible immediately.
+          </div>
+          <div class="guide-item">
+            <strong>The dashboard is meant to tell a rollout story.</strong>
+            It connects the mandatory CSVs to corridor prioritisation, distributor pressure, and a practical 2027 deployment sequence.
+          </div>
+        </div>
+      </aside>
+    </section>
+"""
+        impact_section = """
+    <section class="impact-band">
+      <article class="card impact-card">
+        <p class="eyebrow">Why Iberdrola Should Care</p>
+        <div class="metric" id="impactCoverage">0</div>
+        <p>interurban corridors are covered by the proposal, turning the output into a national network decision rather than a list of isolated sites.</p>
+      </article>
+      <article class="card impact-card">
+        <p class="eyebrow">Capital Discipline</p>
+        <div class="metric" id="impactBaseline">0</div>
+        <p>existing baseline stations are already credited in the planning logic so the proposal avoids overbuilding where supply already exists.</p>
+      </article>
+      <article class="card impact-card">
+        <p class="eyebrow">Execution Risk</p>
+        <div class="metric" id="impactFriction">0</div>
+        <p>of proposed sites are friction points, making the grid-constrained part of the rollout visible before investment decisions are made.</p>
+      </article>
+    </section>
+"""
+        recommendation_section = """
+    <section class="recommendation-strip">
+      <article class="recommendation-card">
+        <p class="eyebrow">Recommendation 1</p>
+        <h3>Prioritize build-now corridors first</h3>
+        <p>Start with the green share of the network to secure visible interurban coverage quickly, then use those wins to phase investment into the more constrained corridors.</p>
+      </article>
+      <article class="recommendation-card">
+        <p class="eyebrow">Recommendation 2</p>
+        <h3>Treat friction points as a roadmap, not a flaw</h3>
+        <p>More than half of the proposed sites surface real grid tension. That is valuable because it shows exactly where commercial need and reinforcement planning must be aligned.</p>
+      </article>
+      <article class="recommendation-card">
+        <p class="eyebrow">Recommendation 3</p>
+        <h3>Focus early attention on the strongest national corridors</h3>
+        <p>The proposal concentrates the heaviest charger counts on corridors such as A-7, A-66, and A-2, where network relevance, route continuity, and strategic value are hard to ignore.</p>
+      </article>
+      <article class="recommendation-card">
+        <p class="eyebrow">Recommendation 4</p>
+        <h3>Defend every placement with public evidence</h3>
+        <p>Each site is supported by a reproducible mix of official baseline charging data, forecasted EV demand, traffic intensity, stop-quality proxies, and published distributor capacity files.</p>
+      </article>
+    </section>
+"""
+        story_section = """
+    <section class="story-grid">
+      <article class="card story-card">
+        <p class="eyebrow">Strategic Thesis</p>
+        <h2>We optimize for the fewest useful stations, not the most points on a map.</h2>
+        <p>The proposal starts from interurban coverage need and takes credit for the existing baseline. That means long-distance corridors with weak current charging supply rise first, while already-served routes are penalized.</p>
+      </article>
+      <article class="card story-card">
+        <p class="eyebrow">Placement Logic</p>
+        <h2>Every site must pass three tests.</h2>
+        <p>First, the corridor must matter strategically. Second, the stop must make commercial sense. Third, the nearest published grid node must support immediate deployment or justify phased reinforcement.</p>
+      </article>
+      <article class="card story-card">
+        <p class="eyebrow">Investment Framing</p>
+        <h2>The map is a rollout roadmap, not a static inventory.</h2>
+        <p>Green sites are immediate candidates, yellow sites are sequencing candidates, and red sites identify where mobility need collides with network constraints. That turns geography into an actionable plan.</p>
+      </article>
+    </section>
+"""
+        analytics_sections = f"""
+    <section class="analytics">
+      <article class="card">
+        <p class="eyebrow">Deployment Ladder</p>
+        <h2>Three action buckets for a practical 2027 rollout</h2>
+        <div class="status-stack" id="statusStack" style="margin-top: 16px;"></div>
+      </article>
+
+      <article class="card">
+        <p class="eyebrow">National Priority Corridors</p>
+        <h2>Where the proposal is strongest and why</h2>
+        <div class="corridor-callouts" id="corridorCallouts"></div>
+        <table class="route-table">
+          <thead>
+            <tr>
+              <th>Route</th>
+              <th>Sites</th>
+              <th>Chargers</th>
+              <th>Friction</th>
+            </tr>
+          </thead>
+          <tbody id="routeTableBody"></tbody>
+        </table>
+      </article>
+    </section>
+
+    <section class="analytics">
+      <article class="card">
+        <p class="eyebrow">Business-Fit Logic</p>
+        <h2>How the business score helps break ties between plausible sites</h2>
+        <div class="source-grid">
+{business_score_cards_html}
+        </div>
+        <p class="footnote">The route-level `business_support_score` aggregates stronger commercial ecosystems by corridor, while the station-level `business_score` gives more weight to the closest anchors near the final chosen point.</p>
+      </article>
+
+      <article class="card">
+        <p class="eyebrow">Evidence Backbone</p>
+        <h2>Public and competition-relevant sources behind the proposal</h2>
+        <div class="source-grid">
+{source_cards_html}
+        </div>
+      </article>
+    </section>
+
+    <section class="analytics">
+      <article class="card">
+        <p class="eyebrow">Assumptions</p>
+        <h2>How we kept key siting assumptions explicit and defensible</h2>
+        <div class="assumption-grid">
+{assumption_cards_html}
+        </div>
+      </article>
+    </section>
+
+    <section class="analytics">
+      <article class="card">
+        <p class="eyebrow">Grid Pressure</p>
+        <h2>Where reinforcement conversations cluster by distributor</h2>
+        <table class="friction-table">
+          <thead>
+            <tr>
+              <th>Distributor</th>
+              <th>Friction Points</th>
+              <th>Demand (kW)</th>
+            </tr>
+          </thead>
+          <tbody id="frictionTableBody"></tbody>
+        </table>
+      </article>
+
+      <article class="card">
+        <p class="eyebrow">Project Framing</p>
+        <h2>Why this view supports our strategy</h2>
+        <div class="spotlight-grid">
+          <div class="spotlight">
+            <div class="label muted">Offline-ready</div>
+            <div class="value">100%</div>
+            <p>No installs, no logins, no internet dependency, and all data is embedded in the file.</p>
+          </div>
+          <div class="spotlight">
+            <div class="label muted">Grid Friction Share</div>
+            <div class="value" id="spotlightFriction">0%</div>
+            <p>Share of proposed sites that also become friction points, making the build-now versus reinforce-first trade-off visible.</p>
+          </div>
+          <div class="spotlight">
+            <div class="label muted">Deployment Logic</div>
+            <div class="value">3-step</div>
+            <p>Build now, phase next, reinforce first. The map is designed to make the deployment sequence understandable at a glance.</p>
+          </div>
+        </div>
+        <p class="footnote">Data story: RTIG interurban corridors + official charging baseline + mandatory EV forecast + published distributor capacity files + business-stop proxies from MITERD and INE.</p>
+      </article>
+    </section>
+{explorer_section}"""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -700,6 +933,9 @@ def build_offline_dashboard(
       gap: 20px;
       align-items: start;
     }}
+    .main.map-only {{
+      grid-template-columns: 1fr;
+    }}
     .map-card {{
       padding: 18px;
       background:
@@ -750,7 +986,6 @@ def build_offline_dashboard(
       flex: 1 1 220px;
     }}
     .map-wrap {{
-      position: relative;
       overflow: hidden;
       border-radius: 22px;
       border: 1px solid rgba(34,49,66,0.10);
@@ -763,15 +998,10 @@ def build_offline_dashboard(
       height: auto;
       display: block;
     }}
-    .map-overlay {{
-      position: absolute;
-      top: 16px;
-      left: 16px;
-      display: grid;
-      gap: 10px;
-      max-width: 300px;
-      z-index: 2;
-      pointer-events: none;
+    .map-legend-row {{
+      display: flex;
+      justify-content: flex-start;
+      margin: 14px 0 12px;
     }}
     .legend-card {{
       background: rgba(255,253,248,0.92);
@@ -780,6 +1010,7 @@ def build_offline_dashboard(
       padding: 12px 14px;
       box-shadow: 0 12px 30px rgba(34,49,66,0.08);
       backdrop-filter: blur(6px);
+      max-width: 300px;
     }}
     .legend-row {{
       display: flex;
@@ -1070,125 +1301,38 @@ def build_offline_dashboard(
 </head>
 <body>
   <div class="wrap">
-    <section class="hero">
-      <article class="card hero-card">
-        <p class="eyebrow">IE Sustainability Datathon 2026 · Deliverable 3</p>
-        <h1>Our 2027 interurban charging rollout proposal for Iberdrola.</h1>
-        <p class="lead">This dashboard is built to defend the placement logic behind the network, not just display points on a map. It combines corridor need, current charging scarcity, 2027 EV demand, stop quality, and grid feasibility into a phased rollout strategy.</p>
-        <div class="kpi-grid">
-          <div class="kpi"><div class="label">Proposed Sites</div><div class="value" id="metricSites">0</div><div class="sub">File 2 footprint</div></div>
-          <div class="kpi"><div class="label">Total Chargers</div><div class="value" id="metricChargers">0</div><div class="sub">Installed points proposed</div></div>
-          <div class="kpi"><div class="label">Friction Points</div><div class="value" id="metricFriction">0</div><div class="sub">File 3 bottlenecks</div></div>
-          <div class="kpi"><div class="label">Existing Baseline</div><div class="value" id="metricBaseline">0</div><div class="sub">Official interurban context</div></div>
-          <div class="kpi"><div class="label">Projected EV 2027</div><div class="value" id="metricEV">0</div><div class="sub">Mandatory forecast anchor</div></div>
-          <div class="kpi"><div class="label">Covered Corridors</div><div class="value" id="metricRoutes">0</div><div class="sub">Distinct route segments</div></div>
-        </div>
-      </article>
-      <aside class="card">
-        <p class="eyebrow">How To Read The Map</p>
-        <div class="guide-list">
-          <div class="guide-item">
-            <strong>Colors explain buildability, not demand.</strong>
-            Green means the nearest published grid node looks comfortable. Yellow means phased deployment. Red means reinforce first.
-          </div>
-          <div class="guide-item">
-            <strong>Marker size shows station scale.</strong>
-            Larger dots represent sites with more chargers, so spatial importance is visible immediately.
-          </div>
-          <div class="guide-item">
-            <strong>The dashboard is meant to tell a rollout story.</strong>
-            It connects the mandatory CSVs to corridor prioritisation, distributor pressure, and a practical 2027 deployment sequence.
-          </div>
-        </div>
-      </aside>
-    </section>
-
-    <section class="impact-band">
-      <article class="card impact-card">
-        <p class="eyebrow">Why Iberdrola Should Care</p>
-        <div class="metric" id="impactCoverage">0</div>
-        <p>interurban corridors are covered by the proposal, turning the output into a national network decision rather than a list of isolated sites.</p>
-      </article>
-      <article class="card impact-card">
-        <p class="eyebrow">Capital Discipline</p>
-        <div class="metric" id="impactBaseline">0</div>
-        <p>existing baseline stations are already credited in the planning logic so the proposal avoids overbuilding where supply already exists.</p>
-      </article>
-      <article class="card impact-card">
-        <p class="eyebrow">Execution Risk</p>
-        <div class="metric" id="impactFriction">0</div>
-        <p>of proposed sites are friction points, making the grid-constrained part of the rollout visible before investment decisions are made.</p>
-      </article>
-    </section>
-
-    <section class="recommendation-strip">
-      <article class="recommendation-card">
-        <p class="eyebrow">Recommendation 1</p>
-        <h3>Prioritize build-now corridors first</h3>
-        <p>Start with the green share of the network to secure visible interurban coverage quickly, then use those wins to phase investment into the more constrained corridors.</p>
-      </article>
-      <article class="recommendation-card">
-        <p class="eyebrow">Recommendation 2</p>
-        <h3>Treat friction points as a roadmap, not a flaw</h3>
-        <p>More than half of the proposed sites surface real grid tension. That is valuable because it shows exactly where commercial need and reinforcement planning must be aligned.</p>
-      </article>
-      <article class="recommendation-card">
-        <p class="eyebrow">Recommendation 3</p>
-        <h3>Focus early attention on the strongest national corridors</h3>
-        <p>The proposal concentrates the heaviest charger counts on corridors such as A-7, A-66, and A-2, where network relevance, route continuity, and strategic value are hard to ignore.</p>
-      </article>
-      <article class="recommendation-card">
-        <p class="eyebrow">Recommendation 4</p>
-        <h3>Defend every placement with public evidence</h3>
-        <p>Each site is supported by a reproducible mix of official baseline charging data, forecasted EV demand, traffic intensity, stop-quality proxies, and published distributor capacity files.</p>
-      </article>
-    </section>
-
-    <section class="story-grid">
-      <article class="card story-card">
-        <p class="eyebrow">Strategic Thesis</p>
-        <h2>We optimize for the fewest useful stations, not the most points on a map.</h2>
-        <p>The proposal starts from interurban coverage need and takes credit for the existing baseline. That means long-distance corridors with weak current charging supply rise first, while already-served routes are penalized.</p>
-      </article>
-      <article class="card story-card">
-        <p class="eyebrow">Placement Logic</p>
-        <h2>Every site must pass three tests.</h2>
-        <p>First, the corridor must matter strategically. Second, the stop must make commercial sense. Third, the nearest published grid node must support immediate deployment or justify phased reinforcement.</p>
-      </article>
-      <article class="card story-card">
-        <p class="eyebrow">Investment Framing</p>
-        <h2>The map is a rollout roadmap, not a static inventory.</h2>
-        <p>Green sites are immediate candidates, yellow sites are sequencing candidates, and red sites identify where mobility need collides with network constraints. That turns geography into an actionable plan.</p>
-      </article>
-    </section>
-
-    <section class="main">
+{hero_section}
+{impact_section}
+{recommendation_section}
+{story_section}
+    <section class="{main_class}">
       <article class="card map-card">
         <div class="toolbar">
           <div class="pill-group" id="statusPills"></div>
           <select class="select" id="distributorFilter"></select>
           <input class="search" id="routeSearch" type="search" placeholder="Filter by route, e.g. A-7 or AP-7N">
         </div>
-        <div class="map-wrap">
-          <div class="map-overlay">
-            <div class="legend-card">
-              <p class="eyebrow" style="margin-bottom:6px;">Visual Legend</p>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--sufficient);"></span>Green: build now</div>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--moderate);"></span>Yellow: phase next</div>
-              <div class="legend-row"><span class="legend-dot" style="background: var(--congested);"></span>Red: reinforce first</div>
-              <div class="legend-size"><span style="width:10px;height:10px;"></span>smaller site</div>
-              <div class="legend-size"><span style="width:18px;height:18px;"></span>larger site</div>
-            </div>
+        <div class="map-legend-row">
+          <div class="legend-card">
+            <p class="eyebrow" style="margin-bottom:6px;">Visual Legend</p>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--sufficient);"></span>Green: build now</div>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--moderate);"></span>Yellow: phase next</div>
+            <div class="legend-row"><span class="legend-dot" style="background: var(--congested);"></span>Red: reinforce first</div>
+            <div class="legend-size"><span style="width:10px;height:10px;"></span>smaller site</div>
+            <div class="legend-size"><span style="width:18px;height:18px;"></span>larger site</div>
           </div>
+        </div>
+        <div class="map-wrap">
           <svg id="networkMap" viewBox="0 0 980 680" role="img" aria-label="Map of Spain with proposed charging stations"></svg>
         </div>
         <div class="map-note">
           <span id="filterSummary">Showing full network proposal.</span>
-          <span>Click a route row or station marker to inspect that corridor in detail.</span>
+          <span>{map_note_secondary}</span>
         </div>
       </article>
 
-      <aside class="sidebar">
+      {"<aside class=\"sidebar\">" if not map_only else ""}
+      {"""
         <article class="card">
           <p class="eyebrow">Selected Site</p>
           <div id="stationAction"></div>
@@ -1204,92 +1348,10 @@ def build_offline_dashboard(
           <p id="routeNarrative" class="muted">Rows below combine planned station density with route-level service need, friction exposure, and corridor relevance.</p>
           <div class="chip-line" id="spotlightChips"></div>
         </article>
-      </aside>
+      """ if not map_only else ""}
+      {"</aside>" if not map_only else ""}
     </section>
-
-    <section class="analytics">
-      <article class="card">
-        <p class="eyebrow">Deployment Ladder</p>
-        <h2>Three action buckets for a practical 2027 rollout</h2>
-        <div class="status-stack" id="statusStack" style="margin-top: 16px;"></div>
-      </article>
-
-      <article class="card">
-        <p class="eyebrow">National Priority Corridors</p>
-        <h2>Where the proposal is strongest and why</h2>
-        <div class="corridor-callouts" id="corridorCallouts"></div>
-        <table class="route-table">
-          <thead>
-            <tr>
-              <th>Route</th>
-              <th>Sites</th>
-              <th>Chargers</th>
-              <th>Friction</th>
-            </tr>
-          </thead>
-          <tbody id="routeTableBody"></tbody>
-        </table>
-      </article>
-    </section>
-
-    <section class="analytics">
-      <article class="card">
-        <p class="eyebrow">Evidence Backbone</p>
-        <h2>Public and competition-relevant sources behind the proposal</h2>
-        <div class="source-grid">
-{source_cards_html}
-        </div>
-      </article>
-
-      <article class="card">
-        <p class="eyebrow">Assumptions</p>
-        <h2>How we kept key siting assumptions explicit and defensible</h2>
-        <div class="assumption-grid">
-{assumption_cards_html}
-        </div>
-      </article>
-    </section>
-
-    <section class="analytics">
-      <article class="card">
-        <p class="eyebrow">Grid Pressure</p>
-        <h2>Where reinforcement conversations cluster by distributor</h2>
-        <table class="friction-table">
-          <thead>
-            <tr>
-              <th>Distributor</th>
-              <th>Friction Points</th>
-              <th>Demand (kW)</th>
-            </tr>
-          </thead>
-          <tbody id="frictionTableBody"></tbody>
-        </table>
-      </article>
-
-      <article class="card">
-        <p class="eyebrow">Project Framing</p>
-        <h2>Why this view supports our strategy</h2>
-        <div class="spotlight-grid">
-          <div class="spotlight">
-            <div class="label muted">Offline-ready</div>
-            <div class="value">100%</div>
-            <p>No installs, no logins, no internet dependency, and all data is embedded in the file.</p>
-          </div>
-          <div class="spotlight">
-            <div class="label muted">Grid Friction Share</div>
-            <div class="value" id="spotlightFriction">0%</div>
-            <p>Share of proposed sites that also become friction points, making the build-now versus reinforce-first trade-off visible.</p>
-          </div>
-          <div class="spotlight">
-            <div class="label muted">Deployment Logic</div>
-            <div class="value">3-step</div>
-            <p>Build now, phase next, reinforce first. The map is designed to make the deployment sequence understandable at a glance.</p>
-          </div>
-        </div>
-        <p class="footnote">Data story: RTIG interurban corridors + official charging baseline + mandatory EV forecast + published distributor capacity files + business-stop proxies from MITERD and INE.</p>
-      </article>
-    </section>
-{explorer_section}
+{analytics_sections}
   </div>
 
   <script>
@@ -1531,22 +1593,24 @@ def build_offline_dashboard(
       const uniqueRoutes = new Set(filtered.map((row) => row.route_segment)).size;
       const chargers = filtered.reduce((acc, row) => acc + Number(row.n_chargers_proposed), 0);
       const summaryRoute = state.selectedRoute ? ` Highlighting ${{state.selectedRoute}}.` : '';
-      filterSummary.textContent = filtered.length
-        ? `Showing ${{filtered.length.toLocaleString()}} sites and ${{chargers.toLocaleString()}} chargers across ${{uniqueRoutes.toLocaleString()}} corridors.${{summaryRoute}}`
-        : 'No stations match the current filter combination.';
+      if (filterSummary) {{
+        filterSummary.textContent = filtered.length
+          ? `Showing ${{filtered.length.toLocaleString()}} sites and ${{chargers.toLocaleString()}} chargers across ${{uniqueRoutes.toLocaleString()}} corridors.${{summaryRoute}}`
+          : 'No stations match the current filter combination.';
+      }}
     }}
 
     function renderMetrics() {{
-      metricSites.textContent = payload.metrics.proposed_sites.toLocaleString();
-      metricChargers.textContent = payload.metrics.total_chargers.toLocaleString();
-      metricFriction.textContent = payload.metrics.friction_points.toLocaleString();
-      metricBaseline.textContent = payload.metrics.existing_baseline.toLocaleString();
-      metricEV.textContent = payload.metrics.ev_2027.toLocaleString();
-      metricRoutes.textContent = payload.metrics.route_count.toLocaleString();
-      impactCoverage.textContent = payload.metrics.route_count.toLocaleString();
-      impactBaseline.textContent = payload.metrics.existing_baseline.toLocaleString();
-      impactFriction.textContent = `${{payload.metrics.friction_share.toFixed(1)}}%`;
-      spotlightFriction.textContent = `${{payload.metrics.friction_share.toFixed(1)}}%`;
+      if (metricSites) metricSites.textContent = payload.metrics.proposed_sites.toLocaleString();
+      if (metricChargers) metricChargers.textContent = payload.metrics.total_chargers.toLocaleString();
+      if (metricFriction) metricFriction.textContent = payload.metrics.friction_points.toLocaleString();
+      if (metricBaseline) metricBaseline.textContent = payload.metrics.existing_baseline.toLocaleString();
+      if (metricEV) metricEV.textContent = payload.metrics.ev_2027.toLocaleString();
+      if (metricRoutes) metricRoutes.textContent = payload.metrics.route_count.toLocaleString();
+      if (impactCoverage) impactCoverage.textContent = payload.metrics.route_count.toLocaleString();
+      if (impactBaseline) impactBaseline.textContent = payload.metrics.existing_baseline.toLocaleString();
+      if (impactFriction) impactFriction.textContent = `${{payload.metrics.friction_share.toFixed(1)}}%`;
+      if (spotlightFriction) spotlightFriction.textContent = `${{payload.metrics.friction_share.toFixed(1)}}%`;
     }}
 
     function renderStatusPills() {{
@@ -1567,6 +1631,7 @@ def build_offline_dashboard(
     }}
 
     function renderDistributorFilter() {{
+      if (!distributorFilter) return;
       const options = ['All', ...new Set(payload.stations.map((row) => row.distributor_network).filter(Boolean))];
       distributorFilter.innerHTML = options
         .map((option) => `<option value="${{option}}">${{option === 'All' ? 'All distributors' : option}}</option>`)
@@ -1579,6 +1644,7 @@ def build_offline_dashboard(
     }}
 
     function renderStationDetail(station) {{
+      if (!stationAction || !stationTitle || !stationNarrative || !stationDetails || !stationWhy) return;
       stationAction.innerHTML = `<span class="action-chip" style="background:${{station.color}}">${{station.action_label}}</span>`;
       stationTitle.textContent = `${{station.location_id}} · ${{station.route_segment}}`;
       stationNarrative.textContent =
@@ -1632,6 +1698,7 @@ def build_offline_dashboard(
 
     function renderStatusStack() {{
       const container = document.getElementById('statusStack');
+      if (!container) return;
       container.innerHTML = payload.statusSummary.map((row) => `
         <div class="status-row">
           <div class="status-head">
@@ -1667,11 +1734,13 @@ def build_offline_dashboard(
       if (!selected) return;
 
       state.selectedRoute = selected.route;
-      routeTitle.textContent = `${{selected.route}} corridor spotlight`;
-      routeNarrative.textContent =
-        `${{fmt(selected.sites)}} proposed sites and ${{fmt(selected.chargers)}} chargers along approximately ` +
-        `${{selected.length_km ? fmtMaybe(selected.length_km, 1) + ' km' : 'the mapped corridor'}}. ` +
-        `${{selected.friction_points ? fmt(selected.friction_points) + ' of those locations fall into the friction-point conversation.' : 'This corridor is relatively cleaner on the current grid view.'}}`;
+      if (routeTitle && routeNarrative) {{
+        routeTitle.textContent = `${{selected.route}} corridor spotlight`;
+        routeNarrative.textContent =
+          `${{fmt(selected.sites)}} proposed sites and ${{fmt(selected.chargers)}} chargers along approximately ` +
+          `${{selected.length_km ? fmtMaybe(selected.length_km, 1) + ' km' : 'the mapped corridor'}}. ` +
+          `${{selected.friction_points ? fmt(selected.friction_points) + ' of those locations fall into the friction-point conversation.' : 'This corridor is relatively cleaner on the current grid view.'}}`;
+      }}
 
       document.querySelectorAll('.route-row').forEach((row) => {{
         row.classList.toggle('active', row.dataset.route === selected.route);
@@ -1680,6 +1749,7 @@ def build_offline_dashboard(
     }}
 
     function renderRouteTable() {{
+      if (!corridorCallouts || !routeTableBody || !spotlightChips) return;
       const maxChargers = Math.max(...payload.routes.map((row) => Number(row.chargers || 0)), 1);
       corridorCallouts.innerHTML = payload.routes.slice(0, 3).map((row) => `
         <article class="corridor-card" data-route="${{row.route}}">
@@ -1736,6 +1806,7 @@ def build_offline_dashboard(
     }}
 
     function renderFrictionTable() {{
+      if (!frictionTableBody) return;
       frictionTableBody.innerHTML = payload.frictionSummary.map((row) => `
         <tr>
           <td><strong>${{row.distributor}}</strong></td>
@@ -1746,6 +1817,7 @@ def build_offline_dashboard(
     }}
 
     function wireSearch() {{
+      if (!routeSearch) return;
       routeSearch.addEventListener('input', (event) => {{
         state.routeQuery = event.target.value;
         if (state.routeQuery.trim()) {{

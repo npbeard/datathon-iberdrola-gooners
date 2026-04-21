@@ -40,6 +40,40 @@ OUTPUT_PATH = ROOT / "maps" / "offline_scenario_explorer.html"
 
 MUNICIPALITY_PATTERN = re.compile(r"Municipio: ([^|]+)")
 PROVINCE_PATTERN = re.compile(r"Provincia: ([^|]+)")
+VEHICLE_RANGE_LIBRARY = [
+    {"model": "Tesla Model 3 RWD", "autonomy_km": 513},
+    {"model": "Tesla Model 3 Long Range", "autonomy_km": 629},
+    {"model": "Tesla Model Y RWD", "autonomy_km": 455},
+    {"model": "Tesla Model Y Long Range", "autonomy_km": 533},
+    {"model": "Tesla Model S", "autonomy_km": 634},
+    {"model": "Tesla Model X", "autonomy_km": 576},
+    {"model": "BYD Dolphin", "autonomy_km": 427},
+    {"model": "BYD Atto 3", "autonomy_km": 420},
+    {"model": "BYD Seal", "autonomy_km": 570},
+    {"model": "MG4 Electric", "autonomy_km": 450},
+    {"model": "MG ZS EV", "autonomy_km": 440},
+    {"model": "Kia EV3", "autonomy_km": 560},
+    {"model": "Kia EV6", "autonomy_km": 528},
+    {"model": "Hyundai Kona Electric", "autonomy_km": 514},
+    {"model": "Hyundai Ioniq 5", "autonomy_km": 507},
+    {"model": "Hyundai Ioniq 6", "autonomy_km": 614},
+    {"model": "Renault 5 E-Tech", "autonomy_km": 410},
+    {"model": "Renault Megane E-Tech", "autonomy_km": 470},
+    {"model": "Renault Scenic E-Tech", "autonomy_km": 625},
+    {"model": "Volkswagen ID.3", "autonomy_km": 557},
+    {"model": "Volkswagen ID.4", "autonomy_km": 520},
+    {"model": "Skoda Enyaq", "autonomy_km": 565},
+    {"model": "Cupra Born", "autonomy_km": 548},
+    {"model": "BMW i4", "autonomy_km": 590},
+    {"model": "BMW iX1", "autonomy_km": 474},
+    {"model": "Mercedes EQE", "autonomy_km": 639},
+    {"model": "Volvo EX30", "autonomy_km": 476},
+    {"model": "Volvo EX40", "autonomy_km": 576},
+    {"model": "Peugeot e-208", "autonomy_km": 433},
+    {"model": "Peugeot e-3008", "autonomy_km": 525},
+    {"model": "Opel Corsa Electric", "autonomy_km": 405},
+    {"model": "Nissan Leaf", "autonomy_km": 385},
+]
 
 
 def geometry_to_lines(roads_gdf: gpd.GeoDataFrame) -> List[List[List[float]]]:
@@ -303,6 +337,7 @@ def render_html(
     bounds_json = json.dumps(bounds, ensure_ascii=False)
     route_graph_json = json.dumps(route_graph, ensure_ascii=False)
     places_json = json.dumps(places, ensure_ascii=False)
+    vehicle_range_json = json.dumps(VEHICLE_RANGE_LIBRARY, ensure_ascii=False)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -311,6 +346,9 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Offline Scenario Explorer</title>
   <style>
+    * {{
+      box-sizing: border-box;
+    }}
     :root {{
       --bg: #f5f1e8;
       --panel: #fffdf7;
@@ -362,10 +400,26 @@ def render_html(
     }}
     .route-controls {{
       display: grid;
-      grid-template-columns: 1fr 1fr auto;
-      gap: 12px;
-      margin-top: 16px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px 18px;
+      margin-top: 20px;
       align-items: end;
+    }}
+    .route-controls > div {{
+      min-width: 0;
+    }}
+    .route-field-origin,
+    .route-field-destination {{
+      grid-column: span 1;
+    }}
+    .route-field-vehicle {{
+      grid-column: 1 / -1;
+    }}
+    .route-field-autonomy {{
+      grid-column: span 1;
+    }}
+    .route-field-action {{
+      grid-column: span 1;
     }}
     label {{
       display: block;
@@ -373,8 +427,10 @@ def render_html(
       color: var(--muted);
       margin-bottom: 6px;
     }}
-    select, button {{
+    select, input, button {{
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       border-radius: 12px;
       border: 1px solid rgba(31,42,55,0.15);
       padding: 10px 12px;
@@ -384,6 +440,7 @@ def render_html(
     button {{
       cursor: pointer;
       background: #f1f5f9;
+      min-height: 48px;
     }}
     .kpis {{
       display: grid;
@@ -448,29 +505,48 @@ def render_html(
     .actions {{
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 16px;
+      gap: 12px;
+      margin-top: 26px;
+    }}
+    .section-label {{
+      margin-top: 28px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
     }}
     .planner-metrics {{
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px 28px;
+      margin-top: 0;
+      margin-bottom: 6px;
+      align-items: stretch;
     }}
     .planner-metric {{
-      background: rgba(15,118,110,0.06);
-      border-radius: 14px;
-      padding: 12px;
+      background: linear-gradient(180deg, rgba(15,118,110,0.05) 0%, rgba(15,118,110,0.02) 100%);
+      border: 1px solid rgba(31,42,55,0.08);
+      border-radius: 20px;
+      padding: 22px 24px;
+      min-height: 132px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 10px 24px rgba(31,42,55,0.05);
     }}
     .planner-metric .label {{
       font-size: 12px;
       color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.06em;
+      line-height: 1.2;
+      max-width: 14ch;
     }}
     .planner-metric .value {{
-      margin-top: 6px;
-      font-size: 22px;
+      margin-top: 14px;
+      font-size: 28px;
+      line-height: 1;
     }}
     .note {{
       margin-top: 14px;
@@ -480,6 +556,13 @@ def render_html(
     @media (max-width: 1000px) {{
       .hero, .main, .kpis, .controls, .actions, .route-controls, .planner-metrics {{
         grid-template-columns: 1fr;
+      }}
+      .route-field-origin,
+      .route-field-destination,
+      .route-field-vehicle,
+      .route-field-autonomy,
+      .route-field-action {{
+        grid-column: auto;
       }}
     }}
   </style>
@@ -527,22 +610,33 @@ def render_html(
         <h2>Why this matters</h2>
         <p>The point is not to show a huge web platform. The point is to let someone explore a few planning assumptions and immediately see how the network changes. This keeps the artifact simple while still giving Iberdrola something interactive.</p>
         <div class="route-controls">
-          <div>
+          <div class="route-field-origin">
             <label for="originInput">Origin city or town</label>
             <input id="originInput" list="placeOptions" placeholder="e.g. Madrid" />
           </div>
-          <div>
+          <div class="route-field-destination">
             <label for="destinationInput">Destination city or town</label>
             <input id="destinationInput" list="placeOptions" placeholder="e.g. Valencia" />
           </div>
-          <div>
+          <div class="route-field-vehicle">
+            <label for="vehicleModelInput">Vehicle model</label>
+            <input id="vehicleModelInput" list="vehicleOptions" placeholder="e.g. Tesla Model 3 Long Range" />
+          </div>
+          <div class="route-field-autonomy">
+            <label for="autonomyInput">Autonomy (km)</label>
+            <input id="autonomyInput" type="number" min="50" step="10" placeholder="e.g. 450" />
+          </div>
+          <div class="route-field-action">
             <label>&nbsp;</label>
             <button id="planRoute">Find best route</button>
           </div>
         </div>
         <datalist id="placeOptions"></datalist>
+        <datalist id="vehicleOptions"></datalist>
+        <p class="section-label">Trip summary</p>
         <div class="planner-metrics">
           <div class="planner-metric"><div class="label">Chosen route</div><div class="value" id="routeDistance">-</div></div>
+          <div class="planner-metric"><div class="label">Vehicle range used</div><div class="value" id="routeRange">-</div></div>
           <div class="planner-metric"><div class="label">Charging support</div><div class="value" id="routeSupport">-</div></div>
           <div class="planner-metric"><div class="label">Suggested stops</div><div class="value" id="routeStops">-</div></div>
         </div>
@@ -551,7 +645,7 @@ def render_html(
           <button id="downloadFile2">Download File 2</button>
           <button id="downloadFile3">Download File 3</button>
         </div>
-        <p class="note" id="routeMessage">Type two places and the explorer will choose the corridor path with the best effective travel cost, balancing road distance with nearby charging support from the current scenario.</p>
+        <p class="note" id="routeMessage">Type two places and optionally add a car model and/or autonomy. If only the model is provided, the explorer estimates the autonomy and then recommends only the charging stops actually needed for the selected journey.</p>
       </div>
     </div>
 
@@ -589,9 +683,16 @@ def render_html(
     const scenarios = {scenarios_json};
     const routeGraph = {route_graph_json};
     const places = {places_json};
+    const vehicleRangeLibrary = {vehicle_range_json};
     const svg = document.getElementById('map');
     const placeOptions = document.getElementById('placeOptions');
     placeOptions.innerHTML = places.slice(0, 2200).map(place => `<option value="${{place.display_name}}"></option>`).join('');
+    const vehicleOptions = document.getElementById('vehicleOptions');
+    vehicleOptions.innerHTML = vehicleRangeLibrary.map(vehicle => `<option value="${{vehicle.model}}"></option>`).join('');
+    const vehicleRangeLookup = new Map(vehicleRangeLibrary.map(vehicle => [vehicle.model.toLowerCase(), vehicle]));
+    const ROUTE_BUFFER_RATIO = 0.80;
+    const MIN_STOP_SPACING_KM = 35;
+    const STATION_MATCH_DISTANCE_KM = 22;
 
     function currentKey() {{
       return `${{document.getElementById('spacing').value}}|${{document.getElementById('chargerPolicy').value}}|${{document.getElementById('gridPolicy').value}}`;
@@ -673,6 +774,33 @@ def render_html(
       let count = 0;
       while (count < limit && left[count] === right[count]) count += 1;
       return count;
+    }}
+
+    function resolveVehicleProfile() {{
+      const modelInput = document.getElementById('vehicleModelInput').value.trim();
+      const autonomyInput = Number(document.getElementById('autonomyInput').value);
+      const hasAutonomy = Number.isFinite(autonomyInput) && autonomyInput > 0;
+      let matchedVehicle = null;
+
+      if (modelInput) {{
+        const normalized = modelInput.toLowerCase();
+        matchedVehicle = vehicleRangeLookup.get(normalized) || vehicleRangeLibrary.find(vehicle =>
+          vehicle.model.toLowerCase() === normalized || vehicle.model.toLowerCase().includes(normalized),
+        ) || null;
+      }}
+
+      if (!hasAutonomy && !matchedVehicle) {{
+        return null;
+      }}
+
+      const autonomyKm = hasAutonomy ? autonomyInput : matchedVehicle.autonomy_km;
+      if (!Number.isFinite(autonomyKm) || autonomyKm <= 0) return null;
+      return {{
+        model: matchedVehicle ? matchedVehicle.model : (modelInput || 'Custom EV'),
+        autonomyKm,
+        source: hasAutonomy ? (matchedVehicle ? 'manual-with-model' : 'manual') : 'estimated-from-model',
+        planningRangeKm: autonomyKm * ROUTE_BUFFER_RATIO,
+      }};
     }}
 
     const segmentIds = routeGraph.segments.map(segment => Number(segment.id));
@@ -765,6 +893,24 @@ def render_html(
       return pathIds.reduce((sum, id) => sum + Number((segmentById.get(Number(id)) || {{}}).length_km || 0), 0);
     }}
 
+    function pathSegmentsWithProgress(pathIds) {{
+      let cumulativeKm = 0;
+      return pathIds.map(id => {{
+        const segment = segmentById.get(Number(id));
+        const lengthKm = Number((segment || {{}}).length_km || 0);
+        const row = {{
+          id: Number(id),
+          segment,
+          startKm: cumulativeKm,
+          midKm: cumulativeKm + lengthKm / 2,
+          endKm: cumulativeKm + lengthKm,
+          lengthKm,
+        }};
+        cumulativeKm += lengthKm;
+        return row;
+      }}).filter(row => row.segment);
+    }}
+
     function candidateSegmentIds(place, maxCandidates=6, maxDistanceKm=90) {{
       const ranked = routeGraph.segments
         .map(segment => ({{
@@ -837,23 +983,82 @@ def render_html(
       return best;
     }}
 
-    function suggestStops(pathIds, scenario) {{
-      const touched = pathIds.map(id => segmentById.get(Number(id))).filter(Boolean);
-      const stations = scenario.file2.filter(station => {{
-        return touched.some(segment => haversineKm(segment.centroid_lat, segment.centroid_lon, station.latitude, station.longitude) <= 22);
-      }});
+    function stationsAlongPath(pathIds, scenario) {{
+      const touched = pathSegmentsWithProgress(pathIds);
       const seen = new Set();
-      return stations
-        .sort((a, b) => Number(b.n_chargers_proposed) - Number(a.n_chargers_proposed))
-        .filter(station => {{
-          if (seen.has(station.location_id)) return false;
-          seen.add(station.location_id);
-          return true;
-        }})
-        .slice(0, 6);
+      const matches = [];
+
+      for (const station of scenario.file2) {{
+        let bestMatch = null;
+        for (const touchedSegment of touched) {{
+          const segment = touchedSegment.segment;
+          const distanceKm = haversineKm(segment.centroid_lat, segment.centroid_lon, station.latitude, station.longitude);
+          const routeMatches = routeFamily(segment.route_segment) === routeFamily(station.route_segment);
+          if (!routeMatches && distanceKm > STATION_MATCH_DISTANCE_KM) continue;
+          const candidate = {{
+            progressKm: touchedSegment.midKm,
+            corridorDistanceKm: distanceKm,
+          }};
+          if (!bestMatch || candidate.corridorDistanceKm < bestMatch.corridorDistanceKm) {{
+            bestMatch = candidate;
+          }}
+        }}
+        if (!bestMatch || seen.has(station.location_id)) continue;
+        seen.add(station.location_id);
+        matches.push({{
+          ...station,
+          progressKm: bestMatch.progressKm,
+          corridorDistanceKm: bestMatch.corridorDistanceKm,
+        }});
+      }}
+
+      return matches.sort((left, right) => {{
+        if (left.progressKm !== right.progressKm) return left.progressKm - right.progressKm;
+        if (left.corridorDistanceKm !== right.corridorDistanceKm) return left.corridorDistanceKm - right.corridorDistanceKm;
+        return Number(right.n_chargers_proposed) - Number(left.n_chargers_proposed);
+      }});
     }}
 
-    function drawRouteOverlay(pathIds, originPlace, destinationPlace, scenario) {{
+    function stationPriorityScore(station) {{
+      const gridScore = station.grid_status === 'Sufficient' ? 3 : station.grid_status === 'Moderate' ? 2 : 1;
+      return gridScore * 1000 + Number(station.n_chargers_proposed || 0) * 10 - Number(station.corridorDistanceKm || 0);
+    }}
+
+    function suggestStops(pathIds, scenario, vehicleProfile) {{
+      const totalDistanceKm = pathDistanceKm(pathIds);
+      if (!vehicleProfile) return [];
+
+      const planningRangeKm = Number(vehicleProfile.planningRangeKm || 0);
+      if (!Number.isFinite(planningRangeKm) || planningRangeKm <= 0) return [];
+      if (totalDistanceKm <= planningRangeKm) return [];
+
+      const stations = stationsAlongPath(pathIds, scenario);
+      const chosenStops = [];
+      let currentKm = 0;
+
+      while (currentKm + planningRangeKm < totalDistanceKm) {{
+        const reachable = stations.filter(station =>
+          station.progressKm > currentKm + MIN_STOP_SPACING_KM &&
+          station.progressKm <= currentKm + planningRangeKm,
+        );
+        if (!reachable.length) {{
+          return null;
+        }}
+
+        reachable.sort((left, right) => {{
+          if (right.progressKm !== left.progressKm) return right.progressKm - left.progressKm;
+          return stationPriorityScore(right) - stationPriorityScore(left);
+        }});
+
+        const nextStop = reachable[0];
+        chosenStops.push(nextStop);
+        currentKm = nextStop.progressKm;
+      }}
+
+      return chosenStops;
+    }}
+
+    function drawRouteOverlay(pathIds, originPlace, destinationPlace, scenario, routeStops) {{
       const fragments = [];
       for (const id of pathIds) {{
         const segment = segmentById.get(Number(id));
@@ -866,8 +1071,7 @@ def render_html(
           fragments.push(`<path d="${{path}}" fill="none" stroke="#0f766e" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"></path>`);
         }}
       }}
-      const routeStops = suggestStops(pathIds, scenario);
-      for (const stop of routeStops) {{
+      for (const stop of routeStops || []) {{
         const [x, y] = project(stop.longitude, stop.latitude);
         fragments.push(`<circle cx="${{x.toFixed(1)}}" cy="${{y.toFixed(1)}}" r="6.6" fill="${{statusColor(stop.grid_status)}}" stroke="white" stroke-width="2"></circle>`);
       }}
@@ -884,7 +1088,6 @@ def render_html(
       fragments.push(`<circle cx="${{ox.toFixed(1)}}" cy="${{oy.toFixed(1)}}" r="7" fill="#1d4ed8" stroke="white" stroke-width="2"></circle>`);
       fragments.push(`<circle cx="${{dx.toFixed(1)}}" cy="${{dy.toFixed(1)}}" r="7" fill="#7c3aed" stroke="white" stroke-width="2"></circle>`);
       svg.innerHTML += fragments.join('');
-      return routeStops;
     }}
 
     function planRoute() {{
@@ -901,20 +1104,43 @@ def render_html(
         document.getElementById('routeMessage').textContent = `No corridor path was found between ${{origin.display_name}} and ${{destination.display_name}} in the local RTIG graph.`;
         return;
       }}
+      const vehicleProfile = resolveVehicleProfile();
+      if (!vehicleProfile) {{
+        document.getElementById('routeMessage').textContent = 'Please provide a vehicle model, an autonomy value, or both. If only the model is provided, the explorer estimates the autonomy automatically.';
+        return;
+      }}
       const pathIds = routeChoice.pathIds;
+      const routeStops = suggestStops(pathIds, scenario, vehicleProfile);
       renderScenario();
-      const routeStops = drawRouteOverlay(pathIds, origin, destination, scenario);
+      if (routeStops === null) {{
+        document.getElementById('routeDistance').textContent = `${{Math.round(routeChoice.totalDistanceKm)}} km`;
+        document.getElementById('routeRange').textContent = `${{Math.round(vehicleProfile.autonomyKm)}} km`;
+        document.getElementById('routeSupport').textContent = 'Insufficient';
+        document.getElementById('routeStops').textContent = '0';
+        document.getElementById('tableTitle').textContent = 'Charging stops needed on this route';
+        document.getElementById('tableBody').innerHTML = '<tr><td colspan="4">No feasible stop sequence was found within the usable vehicle range on the selected corridor path.</td></tr>';
+        document.getElementById('tableNote').textContent = 'Try a longer-range vehicle, increase the autonomy value, or explore a different scenario.';
+        document.getElementById('routeMessage').textContent = `A route was found from ${{origin.display_name}} to ${{destination.display_name}}, but a vehicle with ${{Math.round(vehicleProfile.autonomyKm)}} km of autonomy does not find enough charging support within the explorer's usable planning range of roughly ${{Math.round(vehicleProfile.planningRangeKm)}} km per leg.`;
+        return;
+      }}
+      drawRouteOverlay(pathIds, origin, destination, scenario, routeStops);
       const totalDistance = routeChoice.totalDistanceKm;
       const avgSupport = pathIds.reduce((sum, id) => sum + Number(supportMap[id] || 0), 0) / pathIds.length;
       const accessDistance = routeChoice.accessDistanceKm;
-      const routeRows = routeStops.map(stop => '<tr><td>' + stop.location_id + '</td><td>' + stop.route_segment + '</td><td>' + stop.n_chargers_proposed + '</td><td>' + stop.grid_status + '</td></tr>').join('');
+      const routeRows = routeStops.map(stop => '<tr><td>' + stop.location_id + '</td><td>' + stop.route_segment + '</td><td>' + stop.n_chargers_proposed + ' chargers · ' + Math.round(stop.progressKm) + ' km</td><td>' + stop.grid_status + '</td></tr>').join('');
       document.getElementById('routeDistance').textContent = `${{Math.round(totalDistance)}} km`;
+      document.getElementById('routeRange').textContent = `${{Math.round(vehicleProfile.autonomyKm)}} km`;
       document.getElementById('routeSupport').textContent = avgSupport >= 1.0 ? 'High' : avgSupport >= 0.7 ? 'Medium' : 'Low';
       document.getElementById('routeStops').textContent = routeStops.length.toString();
-      document.getElementById('tableTitle').textContent = 'Suggested charging stops on this route';
-      document.getElementById('tableBody').innerHTML = routeRows || '<tr><td colspan="4">No recommended charging stops were found close to this corridor path.</td></tr>';
-      document.getElementById('tableNote').textContent = 'These are the strongest proposed charging stops encountered along the selected journey, ranked by charger offer and proximity to the chosen corridor.';
-      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using ${{routeChoice.mode}} across several nearby corridor entry options. Dashed access legs connect each municipality to the chosen RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
+      document.getElementById('tableTitle').textContent = 'Charging stops needed on this route';
+      document.getElementById('tableBody').innerHTML = routeRows || '<tr><td colspan="4">This trip is feasible without intermediate charging under the current range assumption.</td></tr>';
+      document.getElementById('tableNote').textContent = 'These are the specific planned stops needed for this trip given the selected vehicle range, not just the strongest stations near the corridor.';
+      const autonomySource = vehicleProfile.source === 'estimated-from-model'
+        ? `using the estimated range for ${{vehicleProfile.model}}`
+        : vehicleProfile.source === 'manual-with-model'
+          ? `using the manual autonomy override for ${{vehicleProfile.model}}`
+          : 'using the manual autonomy input';
+      document.getElementById('routeMessage').textContent = `Best route from ${{origin.display_name}} to ${{destination.display_name}} selected using ${{routeChoice.mode}}. The explorer then filtered the corridor to only the charging stops actually needed ${{autonomySource}}. Dashed access legs connect each municipality to the chosen RTIG corridor entry point (combined access distance: ${{accessDistance.toFixed(1)}} km).`;
     }}
 
     function renderScenario() {{
@@ -938,6 +1164,7 @@ def render_html(
       document.getElementById('tableBody').innerHTML = rows;
       document.getElementById('tableTitle').textContent = 'Top proposed locations';
       document.getElementById('tableNote').textContent = 'Before a route is selected, this table shows the most prominent proposed sites in the current scenario.';
+      document.getElementById('routeRange').textContent = '-';
     }}
 
     function toCsv(rows) {{

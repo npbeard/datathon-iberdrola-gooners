@@ -1427,6 +1427,7 @@ def main() -> None:
         output_path=map_output,
         title="Iberdrola 2027 Interurban Charging Network",
         embed_explorer=False,
+        map_only=True,
     )
     build_offline_dashboard(
         file_1=file_1,
