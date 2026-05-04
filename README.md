@@ -125,6 +125,49 @@ python scripts/scrub_notebook_paths.py
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Sources["Data Sources"]
+        A["RTIG Road Network\nArcGIS REST API · 1,602 segments"]
+        B["NAP Charging Baseline\n9,699 stations"]
+        C["2027 EV Projection\n549,226 EVs · datos.gob.es"]
+        D["Grid Capacity Files\ni-DE · Endesa · Viesgo"]
+        E["Business Anchors\nfuel · food · lodging · parking"]
+    end
+
+    subgraph Pipeline["Processing Pipeline"]
+        F["Download & Validate\nGeometry checks · field normalisation"]
+        G["Feature Engineering\nlength · complexity · TEN-T status"]
+        H["Corridor Ranking\ndemand + scarcity + business fit"]
+        I["Dynamic Site Placement\n~120 km spacing"]
+        J["Grid Feasibility Check\nnearest-node matching"]
+    end
+
+    subgraph Outputs["Outputs"]
+        K["252 Proposed Sites\nFile 1.csv"]
+        L["153 Friction Points\nFile 2.csv"]
+        M["Rollout Plan\n99 build now · 15 phase · 138 reinforce"]
+        N["Offline Scenario Explorer\nmaps/offline_scenario_explorer.html"]
+    end
+
+    A & B --> F
+    C & E --> G
+    D --> J
+    F --> G --> H --> I --> J
+    J --> K & L & M
+    M --> N
+```
+
+---
+
+## Demo
+
+![Offline Scenario Explorer demo](docs/demo.gif)
+
+---
+
 ## 🚀 Pipeline Overview
 
 ### Stage 1: Data Acquisition
